@@ -1142,6 +1142,7 @@ class LearnerImpl : public LearnerIO {
     monitor_.Stop("PredictRaw");
 
     monitor_.Start("GetGradient");
+    printf("Nuestro segundo print \n");
     GetGradient(predt->predictions, train->Info(), iter, &gpair_);
     monitor_.Stop("GetGradient");
     TrainingObserver::Instance().Observe(*gpair_.Data(), "Gradients");

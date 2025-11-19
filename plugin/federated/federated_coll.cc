@@ -68,7 +68,7 @@ Coll *FederatedColl::MakeCUDAVar() {
   CHECK(fed);
   auto stub = fed->Handle();
 
-  print("CLIENT SIDE ALLREDUCE\n");
+  printf("CLIENT SIDE ALLREDUCE\n");
   printf("Federated Allreduce called: rank=%d, size=%zu\n", comm.Rank(), data.size_bytes());
   printf("Line 72, file federated_coll.cc\n");
 
