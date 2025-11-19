@@ -4,11 +4,11 @@
 #ifndef XGBOOST_TREE_HIST_HISTOGRAM_H_
 #define XGBOOST_TREE_HIST_HISTOGRAM_H_
 
-#include <algorithm>   // for max
-#include <cstddef>     // for size_t
-#include <cstdint>     // for int32_t
-#include <utility>     // for move
-#include <vector>      // for vector
+#include <algorithm>  // for max
+#include <cstddef>    // for size_t
+#include <cstdint>    // for int32_t
+#include <utility>    // for move
+#include <vector>     // for vector
 
 #include "../../collective/allreduce.h"    // for Allreduce
 #include "../../common/hist_util.h"        // for GHistRow, ParallelGHi...
@@ -77,7 +77,7 @@ class HistogramBuilder {
     common::ParallelFor2d(space, this->n_threads_, [&](size_t nid_in_set, common::Range1d r) {
       const auto tid = static_cast<unsigned>(omp_get_thread_num());
       bst_node_t const nidx = nodes_to_build[nid_in_set];
-      auto const& elem = row_set_collection[nidx];
+      auto const &elem = row_set_collection[nidx];
       auto start_of_row_set = std::min(r.begin(), elem.Size());
       auto end_of_row_set = std::min(r.end(), elem.Size());
       auto rid_set = common::Span<bst_idx_t const>{elem.begin() + start_of_row_set,
@@ -185,6 +185,8 @@ class HistogramBuilder {
     if (is_distributed_ && !is_col_split_) {
       // The cache is contiguous, we can perform allreduce for all nodes in one go.
       CHECK(!nodes_to_build.empty());
+      printf("Before Allreduce\n");
+      printf("Line 191, histogram.h\n");
       auto first_nidx = nodes_to_build.front();
       std::size_t n = n_total_bins * nodes_to_build.size() * 2;
       auto rc = collective::Allreduce(
