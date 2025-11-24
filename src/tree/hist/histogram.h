@@ -207,38 +207,17 @@ class HistogramBuilder {
 
       int rank = collective::GetRank();
 
-      // Generación de claves, compartición de clave publica, calculo de clave secreta
-      // y generación de máscara PRG
-      std::cout << "Iniciando simulación..." << std::endl;
-
-      if (rank == 0) {
-        // simulate client 0 -- workerB
-        std::cout << "Lanzando Worker B..." << std::endl;
-        DHExchangeResult resB = clienteB();
-
-        if (resB.ok) {
-          std::cout << "[Main] Worker B terminó con éxito." << std::endl;
-        }
-      } else if (rank == 1) {
-        // simulate client 1 -- workerA
-        std::cout << "Lanzando Worker A..." << std::endl;
-        DHExchangeResult resA = servidorA();
-
-        if (resA.ok) {
-          std::cout << "[Main] Worker A terminó con éxito." << std::endl;
-        }
-      }
-
       std::vector<double> local_copy(n);
       std::memcpy(local_copy.data(), reinterpret_cast<double const *>(raw), n * sizeof(double));
 
-      printf("\n");
-      printf("[No Secure Aggregation]\n");
-      auto rc_plain =
-          collective::Allreduce(ctx, linalg::MakeVec(local_copy.data(), n), collective::Op::kSum);
-      SafeColl(rc_plain);
+      // printf("\n");
+      // printf("[No Secure Aggregation]\n");
+      // auto rc_plain =
+      //     collective::Allreduce(ctx, linalg::MakeVec(local_copy.data(), n),
+      //     collective::Op::kSum);
+      // SafeColl(rc_plain);
 
-      printf("[BASELINE GLOBAL] grad=%f hess=%f\n", local_copy[0], local_copy[1]);
+      // printf("[BASELINE GLOBAL] grad=%f hess=%f\n", local_copy[0], local_copy[1]);
 
       printf("\n");
       printf("[Secure Aggregation Debug]\n");
@@ -255,19 +234,49 @@ class HistogramBuilder {
         printf("[Hist SIZE SET] bytes=%zu bins=%zu nodes=%zu\n", collective::g_expected_hist_bytes,
                collective::g_expected_hist_bins, collective::g_expected_hist_nodes);
 
+        // Generación de claves, compartición de clave publica, calculo de clave secreta
+        // y generación de máscara PRG
+        std::cout << "Iniciando simulación..." << std::endl;
+
         // Simulate adding mask to gradients
         // for each bin, in the buffer of histograms
         for (std::size_t i = 0; i < bins; ++i) {
           if (rank == 0) {
             // simulate client 0 -- workerB
-            double new_g = raw[i].GetGrad() + 1.0;
-            double new_h = raw[i].GetHess() + 1.0;
-            raw[i] = GradientPairPrecise(new_g, new_h);  // modifies real memory
+            std::cout << "Lanzando Worker B..." << std::endl;
+            DHExchangeResult resB = clienteB();
+
+            if (resB.ok) {
+              std::cout << "[Main] Worker B terminó con éxito." << std::endl;
+            }
+
+            std::vector<double> datos = {raw[i].GetGrad(), raw[i].GetHess()};
+            // obtener gradientes
+            auto mask = PRG(resB.sharedSecret, n);
+            std::cout << "[B] Máscara generada." << std::endl;
+
+            // aplicar máscara
+            std::vector<double> datos_masked{datos[0] + mask[0], datos[1] + mask[1]};
+
+            raw[i] = GradientPairPrecise(datos_masked[0], datos_masked[1]);  // modifies real memory
           } else {
             // simulate client 1 -- workerA
-            double new_g = raw[i].GetGrad() - 1.0;
-            double new_h = raw[i].GetHess() - 1.0;
-            raw[i] = GradientPairPrecise(new_g, new_h);  // modifies real memory
+            std::cout << "Lanzando Worker A..." << std::endl;
+            DHExchangeResult resA = servidorA();
+
+            if (resA.ok) {
+              std::cout << "[Main] Worker A terminó con éxito." << std::endl;
+            }
+
+            std::vector<double> datos = {raw[i].GetGrad(), raw[i].GetHess()};
+            // obtener gradientes
+            auto mask = PRG(resA.sharedSecret, n);
+            std::cout << "[B] Máscara generada." << std::endl;
+
+            // aplicar máscara
+            std::vector<double> datos_masked{datos[0] - mask[0], datos[1] - mask[1]};
+
+            raw[i] = GradientPairPrecise(datos_masked[0], datos_masked[1]);  //
           }
         }
 

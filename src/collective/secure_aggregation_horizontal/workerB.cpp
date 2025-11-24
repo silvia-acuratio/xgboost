@@ -76,9 +76,12 @@ DHExchangeResult clienteB() {
   close(sockfd);
   std::cout << "[B] Socket cerrado.\n";
 
+  uint64_t shared = DiffieHellman::modexp(result.remotePub, result.localPriv, PRIME_DH);
+  std::cout << "[B] Secreto compartido (hex): 0x" << std::hex << shared << std::dec << "\n";
   result.localPriv = dhB.get_private_key();  // añadir getter
   result.localPub = pubB;
   result.remotePub = pubA;
   result.ok = true;
+  result.sharedSecret = shared;
   return result;
 }

@@ -7,9 +7,10 @@
 
 // 1. Movemos la estructura aquí para que ambos la conozcan
 struct DHExchangeResult {
-  uint64_t localPriv;
-  uint64_t localPub;
-  uint64_t remotePub;
+  double localPriv;
+  double localPub;
+  double remotePub;
+  double sharedSecret;
   bool ok;
 };
 
