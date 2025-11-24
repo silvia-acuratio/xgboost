@@ -67,11 +67,6 @@ Coll *FederatedColl::MakeCUDAVar() {
   auto fed = dynamic_cast<FederatedComm const *>(&comm);
   CHECK(fed);
   auto stub = fed->Handle();
-
-  printf("CLIENT SIDE ALLREDUCE\n");
-  printf("Federated Allreduce called: rank=%d, size=%zu\n", comm.Rank(), data.size_bytes());
-  printf("Line 72, file federated_coll.cc\n");
-
   AllreduceRequest request;
   request.set_sequence_number(sequence_number_++);
   request.set_rank(comm.Rank());

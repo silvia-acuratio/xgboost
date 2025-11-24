@@ -33,10 +33,6 @@ grpc::Status FederatedService::AllgatherV(grpc::ServerContext*, AllgatherVReques
 
 grpc::Status FederatedService::Allreduce(grpc::ServerContext*, AllreduceRequest const* request,
                                          AllreduceReply* reply) {
-  printf("SERVER SIDE ALLREDUCE\n");
-  printf("Federated Allreduce called: rank=%d, size=%zu\n", request->rank(),
-         request->send_buffer().size());
-  printf("Line 39, file federated_tracker.cc\n");
   handler_.Allreduce(request->send_buffer().data(), request->send_buffer().size(),
                      reply->mutable_receive_buffer(), request->sequence_number(), request->rank(),
                      static_cast<xgboost::ArrayInterfaceHandler::Type>(request->data_type()),
@@ -81,7 +77,8 @@ std::future<Result> FederatedTracker::Run() {
         builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
       }
       builder.RegisterService(&service);
-      // LOG(CONSOLE) << "Insecure federated server listening on " << server_address << ", world size "
+      // LOG(CONSOLE) << "Insecure federated server listening on " << server_address << ", world
+      // size "
       //              << this->n_workers_;
     } else {
       auto options = grpc::SslServerCredentialsOptions(

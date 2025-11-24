@@ -4,8 +4,16 @@
 #include "in_memory_handler.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <functional>
-#include "comm.h"
+#include <unordered_map>
+#include <utility>
+
+namespace xgboost::collective {
+std::size_t g_expected_hist_bytes = 0;
+std::size_t g_expected_hist_bins = 0;
+std::size_t g_expected_hist_nodes = 0;
+}  // namespace xgboost::collective
 
 namespace xgboost::collective {
 /**
@@ -115,9 +123,24 @@ class AllreduceFunctor {
         std::transform(buffer, buffer + size, input, buffer,
                        [](T a, T b) { return std::min(a, b); });
         break;
-      case Op::kSum:
+      case Op::kSum: {
+        T prev_g = buffer[0];  // workerB
+        T prev_h = buffer[1];
+        T add_g = input[0];  // workerA
+        T add_h = input[1];
         std::transform(buffer, buffer + size, input, buffer, std::plus<T>());
-        break;
+        T suma_g = buffer[0];
+        T suma_h = buffer[1];
+
+        if (size * sizeof(T) >= 4000) {
+          printf(
+              "[AllreduceFunctor SUM] g(workerB=%f + workerA=%f ) = %f | h(workerB=%f + workerA=%f "
+              ") "
+              "= "
+              "%f\n",
+              prev_g, add_g, suma_g, prev_h, add_h, suma_h);
+        }
+      } break;
       case Op::kBitwiseAND:
       case Op::kBitwiseOR:
       case Op::kBitwiseXOR:
@@ -256,7 +279,6 @@ void InMemoryHandler::Handle(char const* input, std::size_t bytes, std::string* 
 
   LOG(DEBUG) << functor.name << " rank " << rank << ": waiting for current sequence number";
   cv_.wait(lock, [this, sequence_number] { return sequence_number_ == sequence_number; });
-
   LOG(DEBUG) << functor.name << " rank " << rank << ": handling request";
   functor(input, bytes, &buffer_);
   received_++;

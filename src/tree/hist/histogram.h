@@ -7,10 +7,14 @@
 #include <algorithm>  // for max
 #include <cstddef>    // for size_t
 #include <cstdint>    // for int32_t
-#include <utility>    // for move
-#include <vector>     // for vector
+#include <mutex>
+#include <thread>   // for thread
+#include <utility>  // for move
+#include <vector>   // for vector
 
-#include "../../collective/allreduce.h"    // for Allreduce
+#include "../../collective/allreduce.h"                                // for Allreduce
+#include "../../collective/communicator-inl.h"                         // for GetRank, GetWorldSize
+#include "../../collective/secure_aggregation_horizontal/workers.hpp"  // for clienteA, clienteB
 #include "../../common/hist_util.h"        // for GHistRow, ParallelGHi...
 #include "../../common/row_set.h"          // for RowSetCollection
 #include "../../common/threading_utils.h"  // for ParallelFor2d, Range1d, BlockedSpace2d
@@ -25,6 +29,11 @@
 #include "xgboost/logging.h"               // for CHECK_GE
 #include "xgboost/span.h"                  // for Span
 #include "xgboost/tree_model.h"            // for RegTree
+namespace xgboost::collective {
+extern std::size_t g_expected_hist_bytes;
+extern std::size_t g_expected_hist_bins;
+extern std::size_t g_expected_hist_nodes;
+}  // namespace xgboost::collective
 
 namespace xgboost::tree {
 /**
@@ -185,13 +194,91 @@ class HistogramBuilder {
     if (is_distributed_ && !is_col_split_) {
       // The cache is contiguous, we can perform allreduce for all nodes in one go.
       CHECK(!nodes_to_build.empty());
-      printf("Before Allreduce\n");
-      printf("Line 191, histogram.h\n");
       auto first_nidx = nodes_to_build.front();
       std::size_t n = n_total_bins * nodes_to_build.size() * 2;
+
+      // DEBUGGING: edditing gradients before allreduce
+      // trying how to access the gradients and hessians
+
+      auto row = this->hist_[first_nidx];  // GHistRow
+      auto *raw = row.data();              // GradientPairPrecise*
+
+      std::size_t bins = n_total_bins;
+
+      int rank = collective::GetRank();
+
+      // Generación de claves, compartición de clave publica, calculo de clave secreta
+      // y generación de máscara PRG
+      std::cout << "Iniciando simulación..." << std::endl;
+
+      if (rank == 0) {
+        // simulate client 0 -- workerB
+        std::cout << "Lanzando Worker B..." << std::endl;
+        DHExchangeResult resB = clienteB();
+
+        if (resB.ok) {
+          std::cout << "[Main] Worker B terminó con éxito." << std::endl;
+        }
+      } else if (rank == 1) {
+        // simulate client 1 -- workerA
+        std::cout << "Lanzando Worker A..." << std::endl;
+        DHExchangeResult resA = servidorA();
+
+        if (resA.ok) {
+          std::cout << "[Main] Worker A terminó con éxito." << std::endl;
+        }
+      }
+
+      std::vector<double> local_copy(n);
+      std::memcpy(local_copy.data(), reinterpret_cast<double const *>(raw), n * sizeof(double));
+
+      printf("\n");
+      printf("[No Secure Aggregation]\n");
+      auto rc_plain =
+          collective::Allreduce(ctx, linalg::MakeVec(local_copy.data(), n), collective::Op::kSum);
+      SafeColl(rc_plain);
+
+      printf("[BASELINE GLOBAL] grad=%f hess=%f\n", local_copy[0], local_copy[1]);
+
+      printf("\n");
+      printf("[Secure Aggregation Debug]\n");
+      if (bins > 0) {
+        auto const &gp0 = raw[0];  // GradientPairPrecise
+        // raw[0] is grad of first bin
+        std::size_t expected_hist_bytes = n_total_bins * nodes_to_build.size() * 2 * sizeof(double);
+
+        collective::g_expected_hist_bytes = n * sizeof(double);
+        collective::g_expected_hist_bins = n_total_bins;
+        collective::g_expected_hist_nodes = nodes_to_build.size();
+
+        printf("node=%d, totals bins=%zu, rank=%d\n", first_nidx, bins, rank);
+        printf("[Hist SIZE SET] bytes=%zu bins=%zu nodes=%zu\n", collective::g_expected_hist_bytes,
+               collective::g_expected_hist_bins, collective::g_expected_hist_nodes);
+
+        // Simulate adding mask to gradients
+        // for each bin, in the buffer of histograms
+        for (std::size_t i = 0; i < bins; ++i) {
+          if (rank == 0) {
+            // simulate client 0 -- workerB
+            double new_g = raw[i].GetGrad() + 1.0;
+            double new_h = raw[i].GetHess() + 1.0;
+            raw[i] = GradientPairPrecise(new_g, new_h);  // modifies real memory
+          } else {
+            // simulate client 1 -- workerA
+            double new_g = raw[i].GetGrad() - 1.0;
+            double new_h = raw[i].GetHess() - 1.0;
+            raw[i] = GradientPairPrecise(new_g, new_h);  // modifies real memory
+          }
+        }
+
+        auto *check = this->hist_[first_nidx].data();
+        printf("[LOCAL MASKED FIRST BIN] grad=%f hess=%f\n", raw[0].GetGrad(), raw[0].GetHess());
+      }
+
       auto rc = collective::Allreduce(
           ctx, linalg::MakeVec(reinterpret_cast<double *>(this->hist_[first_nidx].data()), n),
           collective::Op::kSum);
+
       SafeColl(rc);
     }
 
