@@ -194,13 +194,9 @@ class HistogramBuilder {
       this->buffer_.ReduceHist(node, r.begin(), r.end());
     });
     if (is_distributed_ && !is_col_split_) {
-      // The cache is contiguous, we can perform allreduce for all nodes in one go.
       CHECK(!nodes_to_build.empty());
       auto first_nidx = nodes_to_build.front();
       std::size_t n = n_total_bins * nodes_to_build.size() * 2;
-
-      // DEBUGGING: edditing gradients before allreduce
-      // trying how to access the gradients and hessians
 
       auto row = this->hist_[first_nidx];  // GHistRow
       auto *raw = row.data();              // GradientPairPrecise*
@@ -212,29 +208,9 @@ class HistogramBuilder {
       std::vector<double> local_copy(n);
       std::memcpy(local_copy.data(), reinterpret_cast<double const *>(raw), n * sizeof(double));
 
-      // printf("\n");
-      // printf("[No Secure Aggregation]\n");
-      // auto rc_plain =
-      //     collective::Allreduce(ctx, linalg::MakeVec(local_copy.data(), n),
-      //     collective::Op::kSum);
-      // SafeColl(rc_plain);
-
-      // printf("[BASELINE GLOBAL] grad=%f hess=%f\n", local_copy[0], local_copy[1]);
-
       printf("\n");
       printf("[Secure Aggregation Debug]\n");
       if (bins > 0) {
-        auto const &gp0 = raw[0];
-        std::size_t expected_hist_bytes = n_total_bins * nodes_to_build.size() * 2 * sizeof(double);
-
-        collective::g_expected_hist_bytes = n * sizeof(double);
-        collective::g_expected_hist_bins = n_total_bins;
-        collective::g_expected_hist_nodes = nodes_to_build.size();
-
-        printf("node=%d, totals bins=%zu, rank=%d\n", first_nidx, bins, rank);
-        printf("[Hist SIZE SET] bytes=%zu bins=%zu nodes=%zu\n", collective::g_expected_hist_bytes,
-               collective::g_expected_hist_bins, collective::g_expected_hist_nodes);
-
         if (!g_keys_exchanged) {
           std::cout << "Intercambio de claves..." << std::endl;
           DHExchangeResult dh_res;
@@ -267,10 +243,21 @@ class HistogramBuilder {
             g_keys_exchanged = true;
           }
         }
+        auto const &gp0 = raw[0];
+        std::size_t expected_hist_bytes = n_total_bins * nodes_to_build.size() * 2 * sizeof(double);
+
+        collective::g_expected_hist_bytes = n * sizeof(double);
+        collective::g_expected_hist_bins = n_total_bins;
+        collective::g_expected_hist_nodes = nodes_to_build.size();
+
+        printf("node=%d, totals bins=%zu, rank=%d\n", first_nidx, bins, rank);
+        printf("[Hist SIZE SET] bytes=%zu bins=%zu nodes=%zu\n", collective::g_expected_hist_bytes,
+               collective::g_expected_hist_bins, collective::g_expected_hist_nodes);
 
         for (std::size_t i = 0; i < bins; ++i) {
           double g = raw[i].GetGrad();
           double h = raw[i].GetHess();
+          printf("[BEFORE MASKING] bin=%zu grad=%f hess=%f\n", i, g, h);
 
           double m_grad = 0.0;
           double m_hess = 0.0;
