@@ -1,6 +1,6 @@
-// Workers.hpp
-#ifndef WORKERS_HPP
-#define WORKERS_HPP
+// Workers.h
+#ifndef WORKERS_H
+#define WORKERS_H
 
 #include <cstdint>
 #include <vector>

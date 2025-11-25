@@ -12,11 +12,11 @@
 #include <utility>  // for move
 #include <vector>   // for vector
 
-#include "../../collective/allreduce.h"                                // for Allreduce
-#include "../../collective/communicator-inl.h"                         // for GetRank, GetWorldSize
-#include "../../collective/secure_aggregation_horizontal/workers.hpp"  // for clienteA, clienteB
-#include "../../common/hist_util.h"        // for GHistRow, ParallelGHi...
-#include "../../common/row_set.h"          // for RowSetCollection
+#include "../../collective/allreduce.h"                              // for Allreduce
+#include "../../collective/communicator-inl.h"                       // for GetRank, GetWorldSize
+#include "../../collective/secure_aggregation_horizontal/workers.h"  // for clienteA, clienteB
+#include "../../common/hist_util.h"                                  // for GHistRow, ParallelGHi...
+#include "../../common/row_set.h"                                    // for RowSetCollection
 #include "../../common/threading_utils.h"  // for ParallelFor2d, Range1d, BlockedSpace2d
 #include "../../data/gradient_index.h"     // for GHistIndexMatrix
 #include "expand_entry.h"                  // for MultiExpandEntry, CPUExpandEntry
@@ -238,45 +238,59 @@ class HistogramBuilder {
         // y generación de máscara PRG
         std::cout << "Iniciando simulación..." << std::endl;
 
+        DHExchangeResult dh_res;
+
+        if (rank == 0) {
+          std::cout << "Lanzando Worker B..." << std::endl;
+          dh_res = clienteB();
+
+          if (dh_res.ok) {
+            std::cout << "[Main] Worker B terminó con éxito." << std::endl;
+          } else {
+            std::cout << "Error en el worker B\n";
+          }
+        } else {
+          std::cout << "Lanzando Worker A..." << std::endl;
+          dh_res = servidorA();
+
+          if (dh_res.ok) {
+            std::cout << "[Main] Worker A terminó con éxito." << std::endl;
+          } else {
+            std::cout << "Error en el worker A\n";
+          }
+        }
+
+        if (!dh_res.ok) {
+          std::cout << "[Secure Agg] DH falló, no se aplica máscara.\n";
+        }
+
+        std::size_t mask_len = n;  // cambia a 2 si sólo pruebas el primer bin
+        std::vector<double> mask;
+        if (dh_res.ok) {
+          mask = PRG(dh_res.sharedSecret, mask_len);
+          std::cout << "[Secure Agg] Máscara generada: len=" << mask.size() << "\n";
+        }
+
         // Simulate adding mask to gradients
         // for each bin, in the buffer of histograms
         for (std::size_t i = 0; i < bins; ++i) {
+          double g = raw[i].GetGrad();
+          double h = raw[i].GetHess();
+          std::vector<double> datos = {g, h};
           if (rank == 0) {
-            // simulate client 0 -- workerB
-            std::cout << "Lanzando Worker B..." << std::endl;
-            DHExchangeResult resB = clienteB();
-
-            if (resB.ok) {
-              std::cout << "[Main] Worker B terminó con éxito." << std::endl;
-            }
-
-            std::vector<double> datos = {raw[i].GetGrad(), raw[i].GetHess()};
-            // obtener gradientes
-            auto mask = PRG(resB.sharedSecret, n);
+            // simulate server -- workerB
             std::cout << "[B] Máscara generada." << std::endl;
-
             // aplicar máscara
             std::vector<double> datos_masked{datos[0] + mask[0], datos[1] + mask[1]};
-
+            // std::vector<double> datos_masked{datos[0] + 1.0, datos[1] + 1.0};
             raw[i] = GradientPairPrecise(datos_masked[0], datos_masked[1]);  // modifies real memory
           } else {
             // simulate client 1 -- workerA
-            std::cout << "Lanzando Worker A..." << std::endl;
-            DHExchangeResult resA = servidorA();
-
-            if (resA.ok) {
-              std::cout << "[Main] Worker A terminó con éxito." << std::endl;
-            }
-
-            std::vector<double> datos = {raw[i].GetGrad(), raw[i].GetHess()};
-            // obtener gradientes
-            auto mask = PRG(resA.sharedSecret, n);
-            std::cout << "[B] Máscara generada." << std::endl;
-
+            std::cout << "[A] Máscara generada." << std::endl;
             // aplicar máscara
             std::vector<double> datos_masked{datos[0] - mask[0], datos[1] - mask[1]};
-
-            raw[i] = GradientPairPrecise(datos_masked[0], datos_masked[1]);  //
+            // std::vector<double> datos_masked{datos[0] - 1.0, datos[1] - 1.0};
+            raw[i] = GradientPairPrecise(datos_masked[0], datos_masked[1]);
           }
         }
 

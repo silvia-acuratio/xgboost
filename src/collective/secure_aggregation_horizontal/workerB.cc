@@ -9,20 +9,11 @@
 #include <thread>
 #include <vector>
 
-#include "DiffieHellman.hpp"
-#include "workers.hpp"
+#include "DiffieHellman.h"
+#include "workers.h"
 
 static constexpr uint64_t PRIME_DH = 0xffffffffffffffc5ULL;
 static constexpr uint64_t GENERATOR_DH = 5ULL;
-
-std::vector<double> PRG(uint64_t seed, size_t length) {
-  std::vector<double> out;
-  std::mt19937_64 gen(seed);
-  std::uniform_real_distribution<double> dist(0.0, 255.0);
-  out.reserve(length);
-  for (size_t i = 0; i < length; ++i) out.push_back(dist(gen));
-  return out;
-}
 
 DHExchangeResult clienteB() {
   DHExchangeResult result{0, 0, 0, false};

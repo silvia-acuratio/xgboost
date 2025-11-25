@@ -10,8 +10,8 @@
 #include <thread>
 #include <vector>
 
-#include "DiffieHellman.hpp"
-#include "workers.hpp"
+#include "DiffieHellman.h"
+#include "workers.h"
 
 static constexpr uint64_t PRIME_DH = 0xffffffffffffffc5ULL;
 static constexpr uint64_t GENERATOR_DH = 5ULL;
