@@ -3,10 +3,16 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <array>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <memory>
 #include <random>
+#include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -37,7 +43,25 @@ DHExchangeResult servidorA() {
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(4000);
-  inet_pton(AF_INET, "100.85.102.20", &addr.sin_addr);
+
+  const char *ruta = "/acuratio/appdata/certs/address_config.txt";
+  std::ifstream archivo(ruta);
+  std::string ip;
+
+  if (archivo.is_open()) {
+    if (std::getline(archivo, ip)) {
+      ip.erase(ip.find_last_not_of(" \n\r\t") + 1);
+    }
+    archivo.close();
+  } else {
+    std::cerr << "[Error] No se pudo abrir el archivo de configuración: " << ruta << std::endl;
+  }
+
+  if (ip.empty()) {
+    std::cerr << "[Error] La IP leída está vacía." << std::endl;
+  }
+
+  inet_pton(AF_INET, ip.c_str(), &addr.sin_addr);
 
   if (bind(sockfd, (sockaddr *)&addr, sizeof(addr)) < 0) {
     perror("bind");
@@ -49,7 +73,7 @@ DHExchangeResult servidorA() {
     close(sockfd);
     return result;
   }
-  std::cout << "[A] Esperando conexion en 100.85.102.20:4000\n";
+  std::cout << "[A] Esperando conexion en " << ip << ":4000...\n";
 
   sockaddr_in cli{};
   socklen_t clen = sizeof(cli);

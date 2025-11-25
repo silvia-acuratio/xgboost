@@ -34,6 +34,8 @@ extern std::size_t g_expected_hist_bytes;
 extern std::size_t g_expected_hist_bins;
 extern std::size_t g_expected_hist_nodes;
 }  // namespace xgboost::collective
+static bool g_keys_exchanged = false;
+static std::vector<double> g_mask;
 
 namespace xgboost::tree {
 /**
@@ -222,8 +224,7 @@ class HistogramBuilder {
       printf("\n");
       printf("[Secure Aggregation Debug]\n");
       if (bins > 0) {
-        auto const &gp0 = raw[0];  // GradientPairPrecise
-        // raw[0] is grad of first bin
+        auto const &gp0 = raw[0];
         std::size_t expected_hist_bytes = n_total_bins * nodes_to_build.size() * 2 * sizeof(double);
 
         collective::g_expected_hist_bytes = n * sizeof(double);
@@ -234,63 +235,59 @@ class HistogramBuilder {
         printf("[Hist SIZE SET] bytes=%zu bins=%zu nodes=%zu\n", collective::g_expected_hist_bytes,
                collective::g_expected_hist_bins, collective::g_expected_hist_nodes);
 
-        // Generación de claves, compartición de clave publica, calculo de clave secreta
-        // y generación de máscara PRG
-        std::cout << "Iniciando simulación..." << std::endl;
+        if (!g_keys_exchanged) {
+          std::cout << "Intercambio de claves..." << std::endl;
+          DHExchangeResult dh_res;
 
-        DHExchangeResult dh_res;
+          if (rank == 0) {
+            std::cout << "Lanzando Worker B..." << std::endl;
+            dh_res = clienteB();
 
-        if (rank == 0) {
-          std::cout << "Lanzando Worker B..." << std::endl;
-          dh_res = clienteB();
+            if (dh_res.ok)
+              std::cout << "[Main] Worker B terminó con éxito." << std::endl;
+            else
+              std::cout << "Error en el worker B\n";
 
-          if (dh_res.ok) {
-            std::cout << "[Main] Worker B terminó con éxito." << std::endl;
           } else {
-            std::cout << "Error en el worker B\n";
-          }
-        } else {
-          std::cout << "Lanzando Worker A..." << std::endl;
-          dh_res = servidorA();
+            std::cout << "Lanzando Worker A..." << std::endl;
+            dh_res = servidorA();
 
-          if (dh_res.ok) {
-            std::cout << "[Main] Worker A terminó con éxito." << std::endl;
+            if (dh_res.ok)
+              std::cout << "[Main] Worker A terminó con éxito." << std::endl;
+            else
+              std::cout << "Error en el worker A\n";
+          }
+
+          if (!dh_res.ok) {
+            std::cout << "[Secure Agg] DH falló, no se aplica máscara.\n";
           } else {
-            std::cout << "Error en el worker A\n";
+            std::size_t mask_len = n;  // cambia a 2 si sólo pruebas el primer bin
+            g_mask = PRG(dh_res.sharedSecret, mask_len);
+            std::cout << "[Secure Agg] Máscara generada: len=" << g_mask.size() << "\n";
+            g_keys_exchanged = true;
           }
         }
 
-        if (!dh_res.ok) {
-          std::cout << "[Secure Agg] DH falló, no se aplica máscara.\n";
-        }
-
-        std::size_t mask_len = n;  // cambia a 2 si sólo pruebas el primer bin
-        std::vector<double> mask;
-        if (dh_res.ok) {
-          mask = PRG(dh_res.sharedSecret, mask_len);
-          std::cout << "[Secure Agg] Máscara generada: len=" << mask.size() << "\n";
-        }
-
-        // Simulate adding mask to gradients
-        // for each bin, in the buffer of histograms
         for (std::size_t i = 0; i < bins; ++i) {
           double g = raw[i].GetGrad();
           double h = raw[i].GetHess();
+
+          double m_grad = 0.0;
+          double m_hess = 0.0;
+
           std::vector<double> datos = {g, h};
+
+          if (!g_mask.empty() && g_mask.size() >= 2) {
+            m_grad = g_mask[0];
+            m_hess = g_mask[0];
+          }
+
           if (rank == 0) {
             // simulate server -- workerB
-            std::cout << "[B] Máscara generada." << std::endl;
-            // aplicar máscara
-            std::vector<double> datos_masked{datos[0] + mask[0], datos[1] + mask[1]};
-            // std::vector<double> datos_masked{datos[0] + 1.0, datos[1] + 1.0};
-            raw[i] = GradientPairPrecise(datos_masked[0], datos_masked[1]);  // modifies real memory
+            raw[i] = GradientPairPrecise(datos[0] + m_grad, datos[1] + m_hess);
           } else {
             // simulate client 1 -- workerA
-            std::cout << "[A] Máscara generada." << std::endl;
-            // aplicar máscara
-            std::vector<double> datos_masked{datos[0] - mask[0], datos[1] - mask[1]};
-            // std::vector<double> datos_masked{datos[0] - 1.0, datos[1] - 1.0};
-            raw[i] = GradientPairPrecise(datos_masked[0], datos_masked[1]);
+            raw[i] = GradientPairPrecise(datos[0] - m_grad, datos[1] - m_hess);
           }
         }
 

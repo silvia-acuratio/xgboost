@@ -3,9 +3,15 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <array>
 #include <cstdint>
+#include <cstdio>
+#include <fstream>
 #include <iostream>
+#include <memory>
 #include <random>
+#include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -29,9 +35,10 @@ DHExchangeResult clienteB() {
   sockaddr_in serv{};
   serv.sin_family = AF_INET;
   serv.sin_port = htons(4000);
+
   inet_pton(AF_INET, "100.85.102.20", &serv.sin_addr);
 
-  if (connect(sockfd, (sockaddr *)&serv, sizeof(serv)) != 0) {
+  if (connect(sockfd, (sockaddr*)&serv, sizeof(serv)) != 0) {
     perror("connect");
     close(sockfd);
     return result;
