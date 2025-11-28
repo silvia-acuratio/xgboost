@@ -266,7 +266,7 @@ class HistogramBuilder {
 
           if (!g_mask.empty() && g_mask.size() >= 2) {
             m_grad = g_mask[0];
-            m_hess = g_mask[0];
+            m_hess = g_mask[1];
           }
 
           if (rank == 0) {
