@@ -132,13 +132,16 @@ class AllreduceFunctor {
         T suma_g = buffer[0];
         T suma_h = buffer[1];
 
+        int i = 0;
         if (size * sizeof(T) >= 4000) {
-          printf(
-              "[AllreduceFunctor SUM] g(workerB=%f + workerA=%f ) = %f | h(workerB=%f + workerA=%f "
-              ") "
-              "= "
-              "%f\n",
-              prev_g, add_g, suma_g, prev_h, add_h, suma_h);
+          if (i < 5) {
+            printf(
+                "[AllreduceFunctor SUM] g(workerB=%f + workerA=%f ) = %f | h(workerB=%f + workerA "
+                "= "
+                "% f) = %f\n",
+                prev_g, add_g, suma_g, prev_h, add_h, suma_h);
+            i++;
+          }
         }
       } break;
       case Op::kBitwiseAND:

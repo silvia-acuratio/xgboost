@@ -10,22 +10,25 @@
 #include <dmlc/parameter.h>     // for FieldEntry, DMLC_DECLARE_FIELD, Parameter, DMLC...
 #include <dmlc/thread_local.h>  // for ThreadLocalStore
 
-#include <algorithm>      // for equal, max, transform, sort, find_if, all_of
-#include <atomic>         // for atomic
-#include <cctype>         // for isalpha, isspace
-#include <cmath>          // for isnan, isinf
-#include <cstdint>        // for int32_t, uint32_t, int64_t, uint64_t
-#include <cstdlib>        // for atoi
-#include <cstring>        // for memcpy, size_t, memset
-#include <iomanip>        // for operator<<, setiosflags
-#include <iterator>       // for back_insert_iterator, distance, back_inserter
-#include <limits>         // for numeric_limits
-#include <memory>         // for allocator, unique_ptr, shared_ptr, operator==
-#include <mutex>          // for mutex, lock_guard
-#include <sstream>        // for operator<<, basic_ostream, basic_ostream::opera...
-#include <stack>          // for stack
-#include <string>         // for basic_string, char_traits, operator<, string
-#include <system_error>   // for errc
+#include <algorithm>  // for equal, max, transform, sort, find_if, all_of
+#include <atomic>     // for atomic
+#include <cctype>     // for isalpha, isspace
+#include <chrono>
+#include <cmath>     // for isnan, isinf
+#include <cstdint>   // for int32_t, uint32_t, int64_t, uint64_t
+#include <cstdlib>   // for atoi
+#include <cstring>   // for memcpy, size_t, memset
+#include <iomanip>   // for operator<<, setiosflags
+#include <iterator>  // for back_insert_iterator, distance, back_inserter
+#include <limits>    // for numeric_limits
+#include <memory>    // for allocator, unique_ptr, shared_ptr, operator==
+#include <mutex>     // for mutex, lock_guard
+#include <nlohmann/json.hpp>
+#include <sstream>       // for operator<<, basic_ostream, basic_ostream::opera...
+#include <stack>         // for stack
+#include <string>        // for basic_string, char_traits, operator<, string
+#include <system_error>  // for errc
+#include <thread>
 #include <unordered_map>  // for operator!=, unordered_map
 #include <utility>        // for pair, as_const, move, swap
 #include <vector>         // for vector
@@ -41,22 +44,22 @@
 #include "common/random.h"                // for GlobalRandom
 #include "common/timer.h"                 // for Monitor
 #include "common/version.h"               // for Version
-#include "xgboost/base.h"                 // for Args, GradientPair, bst_feature_t
-#include "xgboost/context.h"              // for Context
-#include "xgboost/data.h"                 // for DMatrix, MetaInfo
-#include "xgboost/gbm.h"                  // for GradientBooster
-#include "xgboost/global_config.h"        // for GlobalConfiguration, GlobalConfigThreadLocalStore
-#include "xgboost/host_device_vector.h"   // for HostDeviceVector
-#include "xgboost/json.h"                 // for Json, get, Object, String, IsA, Array, ToJson
-#include "xgboost/linalg.h"               // for Vector, VectorView
-#include "xgboost/logging.h"              // for CHECK, LOG, CHECK_EQ
-#include "xgboost/metric.h"               // for Metric
-#include "xgboost/objective.h"            // for ObjFunction
-#include "xgboost/parameter.h"            // for DECLARE_FIELD_ENUM_CLASS, XGBoostParameter
-#include "xgboost/predictor.h"            // for PredictionContainer, PredictionCacheEntry
-#include "xgboost/string_view.h"          // for operator<<, StringView
-#include "xgboost/task.h"                 // for ObjInfo
-
+#include "tree/hist/histogram.h"
+#include "xgboost/base.h"                // for Args, GradientPair, bst_feature_t
+#include "xgboost/context.h"             // for Context
+#include "xgboost/data.h"                // for DMatrix, MetaInfo
+#include "xgboost/gbm.h"                 // for GradientBooster
+#include "xgboost/global_config.h"       // for GlobalConfiguration, GlobalConfigThreadLocalStore
+#include "xgboost/host_device_vector.h"  // for HostDeviceVector
+#include "xgboost/json.h"                // for Json, get, Object, String, IsA, Array, ToJson
+#include "xgboost/linalg.h"              // for Vector, VectorView
+#include "xgboost/logging.h"             // for CHECK, LOG, CHECK_EQ
+#include "xgboost/metric.h"              // for Metric
+#include "xgboost/objective.h"           // for ObjFunction
+#include "xgboost/parameter.h"           // for DECLARE_FIELD_ENUM_CLASS, XGBoostParameter
+#include "xgboost/predictor.h"           // for PredictionContainer, PredictionCacheEntry
+#include "xgboost/string_view.h"         // for operator<<, StringView
+#include "xgboost/task.h"                // for ObjInfo
 namespace {
 const char* kMaxDeltaStepDefaultValue = "0.7";
 }  // anonymous namespace
@@ -1113,7 +1116,173 @@ class LearnerImpl : public LearnerIO {
   }
 
   void UpdateOneIter(int iter, std::shared_ptr<DMatrix> train) override {
+    static bool g_keys_exchanged_api = false;
+
     monitor_.Start("UpdateOneIter");
+
+    // --- INICIO BLOQUE LLAMADA API ---
+    if (!g_keys_exchanged_api) {
+      LOG(CONSOLE)
+          << "[XGBoost-Hook] Iniciando intercambio de claves al principio del entrenamiento...";
+
+      const char* token_env = std::getenv("ACURATIO_ACCESS_TOKEN");
+      const char* uuid_env = std::getenv("ACURATIO_NODE_UUID");
+      const char* API_SCHEME = std::getenv("API_SCHEME");
+      const char* API_IP = std::getenv("API_IP_ADDRESS");
+
+      std::string access_token = (token_env) ? std::string(token_env) : "";
+      std::string node_uuid = (uuid_env) ? std::string(uuid_env) : "";
+      std::string api_scheme = API_SCHEME ? std::string(API_SCHEME) : "https";
+      std::string api_ip = API_IP ? std::string(API_IP) : "api.acuratio.com";
+
+      std::string endpoint = "dh-key-exchange";
+      std::string action = "key_exchange";
+      std::string url = api_scheme + "://" + api_ip + "/" + endpoint + "/" + node_uuid;
+
+      LOG(CONSOLE) << "URL de la API: " << url;
+
+      std::string my_public_key = "02";  // TODO: Generar clave pública real
+      std::string json_payload = "{\"public_key\": \"" + my_public_key + "\"}";
+
+      if (access_token.empty() || node_uuid.empty()) {
+        LOG(WARNING) << "[XGBoost-Hook] Error: Token o UUID no encontrado.";
+      } else {
+        try {
+          LOG(CONSOLE) << "[XGBoost-Hook] Try de la api";
+
+          // PUT
+          std::string cmd_put =
+              "curl -X PUT -s "
+              "-H \"Host: " +
+              api_ip +
+              "\" "
+              "-H \"access-token: " +
+              access_token +
+              "\" "
+              "-H \"Content-Type: application/json\" "
+              "-d '" +
+              json_payload +
+              "' "
+              "\"" +
+              url + "?action=" + action + "\"";
+
+          LOG(CONSOLE) << "[XGBoost-Hook] Ejecutando PUT CURL...";
+
+          int status_code = std::system(cmd_put.c_str());
+
+          if (status_code != 0) {
+            LOG(WARNING) << "[XGBoost-Hook] Error en la ejecución de CURL, código: " << status_code;
+          } else {
+            LOG(CONSOLE) << "[XGBoost-Hook] PUT CURL ejecutado correctamente.";
+          }
+
+          // GET
+          int max_retries = 300;
+          bool ready = false;
+          using json = nlohmann::json;
+
+          for (int i = 0; i < max_retries; i++) {
+            std::string tmp_file = "/tmp/dh_response_" + node_uuid + ".json";
+
+            LOG(CONSOLE) << "[XGBoost-Hook] Ejecutando GET CURL...";
+
+            std::string cmd_get =
+                "curl -X GET -s "
+                "-H \"Host: " +
+                api_ip +
+                "\" "
+                "-H \"access-token: " +
+                access_token +
+                "\" "
+                "-o " +
+                tmp_file +
+                " "
+                "\"" +
+                url + "?action=" + action + "\"";
+
+            int status_code = std::system(cmd_get.c_str());
+            if (status_code != 0) {
+              LOG(WARNING) << "[XGBoost-Hook] Error en la ejecución de CURL, código: "
+                           << status_code;
+              break;
+            } else {
+              LOG(CONSOLE) << "[XGBoost-Hook] GET CURL ejecutado correctamente.";
+            }
+
+            std::ifstream file(tmp_file);
+
+            if (file.is_open()) {
+              LOG(CONSOLE) << "[XGBoost-Hook] Archivo de respuesta abierto correctamente.";
+
+              json j = json::parse(file);
+
+              if (j.contains("wait")) {
+                // time sleep
+                int wait_seconds = j.value("wait", 1);
+                LOG(CONSOLE) << "[XGBoost-Hook] API solicita esperar " << wait_seconds
+                             << " segundos.";
+                std::this_thread::sleep_for(std::chrono::seconds(wait_seconds));
+              }
+              // else {
+              //   break;
+              // }
+              if (j.contains("other_keys")) {
+                LOG(CONSOLE) << "[XGBoost-Hook] Sincronización OK.";
+
+                // almacenamiento claves
+                xgboost::tree::GlobalKeyStore::peer_public_keys.clear();
+
+                for (auto& element : j["other_keys"].items()) {
+                  std::string remote_uuid = element.key();
+                  std::string key = element.value();
+
+                  xgboost::tree::GlobalKeyStore::peer_public_keys[remote_uuid] = key;
+                  LOG(CONSOLE) << "[Clave recibida]:"
+                               << xgboost::tree::GlobalKeyStore::peer_public_keys[remote_uuid];
+                  LOG(CONSOLE) << " -> Nodo:" << remote_uuid << " OK.";
+                }
+                ready = true;
+                break;
+              }
+            }
+            if (!ready) {
+              LOG(WARNING) << "[XGBoost-Hook] Timeout esperando claves de los nodos.";
+            }
+          }
+
+          // // DELETE
+          std::string cmd_delete =
+              "curl -X DELETE -s "
+              "-H \"Host: " +
+              api_ip +
+              "\" "
+              "-H \"access-token: " +
+              access_token +
+              "\" "
+              "\"" +
+              url + "?action=" + "current_node" + "\"";
+        } catch (const std::exception& e) {
+          LOG(WARNING) << "[XGBoost-Hook] Exception capturada durante la llamada a la API.";
+          std::string cmd_delete =
+              "curl -X DELETE -s "
+              "-H \"Host: " +
+              api_ip +
+              "\" "
+              "-H \"access-token: " +
+              access_token +
+              "\" "
+              "\"" +
+              url + "?action=" + "all" + "\"";
+        }
+      }
+    }
+    LOG(CONSOLE) << "--------------------------------";
+    LOG(CONSOLE) << "--------------------------------";
+
+    g_keys_exchanged_api = true;
+
+    // --- FIN BLOQUE LLAMADA API ---
+
     TrainingObserver::Instance().Update(iter);
     this->Configure();
     this->FitIntercept(this->tparam_, train.get());
@@ -1152,7 +1321,8 @@ class LearnerImpl : public LearnerIO {
     this->ValidateDMatrix(train.get(), true);
 
     CHECK_EQ(this->learner_model_param_.OutputLength(), in_gpair->Shape(1))
-        << "The number of columns in gradient should be equal to the number of targets/classes in "
+        << "The number of columns in gradient should be equal to the number of targets/classes "
+           "in "
            "the model.";
     auto predt = prediction_container_.Cache(train, ctx_.Device());
     gbm_->DoBoost(train.get(), in_gpair, predt.get(), obj_.get());
