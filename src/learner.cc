@@ -1115,15 +1115,28 @@ class LearnerImpl : public LearnerIO {
     this->gpair_ = decltype(this->gpair_){};
   }
 
-  void UpdateOneIter(int iter, std::shared_ptr<DMatrix> train) override {
+  long long power(long long base, long long exp, long long mod) {
+    long long res = 1;
+    base = base % mod;
+    while (exp > 0) {
+      if (exp % 2 == 1) res = (res * base) % mod;
+      base = (base * base) % mod;
+      exp /= 2;
+    }
+    return res;
+  }
+
+  void AttemptSecureKeyExchange() {
     static bool g_keys_exchanged_api = false;
 
-    monitor_.Start("UpdateOneIter");
+    if (g_keys_exchanged_api) {
+      return;
+    }
 
     // --- INICIO BLOQUE LLAMADA API ---
     if (!g_keys_exchanged_api) {
-      LOG(CONSOLE)
-          << "[XGBoost-Hook] Iniciando intercambio de claves al principio del entrenamiento...";
+      // LOG(CONSOLE)
+      //     << "[XGBoost-Hook] Iniciando intercambio de claves al principio del entrenamiento...";
 
       const char* token_env = std::getenv("ACURATIO_ACCESS_TOKEN");
       const char* uuid_env = std::getenv("ACURATIO_NODE_UUID");
@@ -1139,16 +1152,32 @@ class LearnerImpl : public LearnerIO {
       std::string action = "key_exchange";
       std::string url = api_scheme + "://" + api_ip + "/" + endpoint + "/" + node_uuid;
 
-      LOG(CONSOLE) << "URL de la API: " << url;
+      // LOG(CONSOLE) << "URL de la API: " << url;
 
-      std::string my_public_key = "02";  // TODO: Generar clave pública real
+      // -- Generacion de CLAVES  --
+
+      long long prime = 2147483647;
+      long long generator = 16807;
+      std::random_device rd;
+      std::mt19937_64 gen(rd());
+      std::uniform_int_distribution<long long> dis(1, prime - 2);
+
+      long long private_key = dis(gen);                             // p = random
+      long long public_key = power(generator, private_key, prime);  // g^a mod p
+
+      // LOG(CONSOLE) << "[XGBoost-Hook] Claves generadas. Pública: " << public_key
+      //              << ", Privada: " << private_key;
+
+      // -- End generacion de CLAVES --
+
+      std::string my_public_key = std::to_string(public_key);
       std::string json_payload = "{\"public_key\": \"" + my_public_key + "\"}";
 
       if (access_token.empty() || node_uuid.empty()) {
-        LOG(WARNING) << "[XGBoost-Hook] Error: Token o UUID no encontrado.";
+        // LOG(WARNING) << "[XGBoost-Hook] Error: Token o UUID no encontrado.";
       } else {
         try {
-          LOG(CONSOLE) << "[XGBoost-Hook] Try de la api";
+          // LOG(CONSOLE) << "[XGBoost-Hook] Try de la api";
 
           // PUT
           std::string cmd_put =
@@ -1166,15 +1195,16 @@ class LearnerImpl : public LearnerIO {
               "\"" +
               url + "?action=" + action + "\"";
 
-          LOG(CONSOLE) << "[XGBoost-Hook] Ejecutando PUT CURL...";
+          // LOG(CONSOLE) << "[XGBoost-Hook] Ejecutando PUT CURL...";
 
           int status_code = std::system(cmd_put.c_str());
 
           if (status_code != 0) {
             LOG(WARNING) << "[XGBoost-Hook] Error en la ejecución de CURL, código: " << status_code;
-          } else {
-            LOG(CONSOLE) << "[XGBoost-Hook] PUT CURL ejecutado correctamente.";
           }
+          // else {
+          //   LOG(CONSOLE) << "[XGBoost-Hook] PUT CURL ejecutado correctamente.";
+          // }
 
           // GET
           int max_retries = 300;
@@ -1184,7 +1214,7 @@ class LearnerImpl : public LearnerIO {
           for (int i = 0; i < max_retries; i++) {
             std::string tmp_file = "/tmp/dh_response_" + node_uuid + ".json";
 
-            LOG(CONSOLE) << "[XGBoost-Hook] Ejecutando GET CURL...";
+            // LOG(CONSOLE) << "[XGBoost-Hook] Ejecutando GET CURL...";
 
             std::string cmd_get =
                 "curl -X GET -s "
@@ -1205,29 +1235,27 @@ class LearnerImpl : public LearnerIO {
               LOG(WARNING) << "[XGBoost-Hook] Error en la ejecución de CURL, código: "
                            << status_code;
               break;
-            } else {
-              LOG(CONSOLE) << "[XGBoost-Hook] GET CURL ejecutado correctamente.";
             }
+            // else {
+            //   LOG(CONSOLE) << "[XGBoost-Hook] GET CURL ejecutado correctamente.";
+            // }
 
             std::ifstream file(tmp_file);
 
             if (file.is_open()) {
-              LOG(CONSOLE) << "[XGBoost-Hook] Archivo de respuesta abierto correctamente.";
+              // LOG(CONSOLE) << "[XGBoost-Hook] Archivo de respuesta abierto correctamente.";
 
               json j = json::parse(file);
 
               if (j.contains("wait")) {
                 // time sleep
                 int wait_seconds = j.value("wait", 1);
-                LOG(CONSOLE) << "[XGBoost-Hook] API solicita esperar " << wait_seconds
+                LOG(WARNING) << "[XGBoost-Hook] API solicita esperar " << wait_seconds
                              << " segundos.";
                 std::this_thread::sleep_for(std::chrono::seconds(wait_seconds));
               }
-              // else {
-              //   break;
-              // }
               if (j.contains("other_keys")) {
-                LOG(CONSOLE) << "[XGBoost-Hook] Sincronización OK.";
+                // LOG(CONSOLE) << "[XGBoost-Hook] Sincronización OK.";
 
                 // almacenamiento claves
                 xgboost::tree::GlobalKeyStore::peer_public_keys.clear();
@@ -1237,9 +1265,9 @@ class LearnerImpl : public LearnerIO {
                   std::string key = element.value();
 
                   xgboost::tree::GlobalKeyStore::peer_public_keys[remote_uuid] = key;
-                  LOG(CONSOLE) << "[Clave recibida]:"
-                               << xgboost::tree::GlobalKeyStore::peer_public_keys[remote_uuid];
-                  LOG(CONSOLE) << " -> Nodo:" << remote_uuid << " OK.";
+                  // LOG(CONSOLE) << "[Clave recibida]:"
+                  //              << xgboost::tree::GlobalKeyStore::peer_public_keys[remote_uuid];
+                  // LOG(CONSOLE) << " -> Nodo:" << remote_uuid << " OK.";
                 }
                 ready = true;
                 break;
@@ -1276,12 +1304,25 @@ class LearnerImpl : public LearnerIO {
         }
       }
     }
-    LOG(CONSOLE) << "--------------------------------";
-    LOG(CONSOLE) << "--------------------------------";
+    // LOG(CONSOLE) << "--------------------------------";
 
     g_keys_exchanged_api = true;
 
     // --- FIN BLOQUE LLAMADA API ---
+  }
+
+  void UpdateOneIter(int iter, std::shared_ptr<DMatrix> train) override {
+    const char* SECURE_AGGREGATION = std::getenv("SECURE_AGGREGATION");
+
+    std::string secure_aggregation = SECURE_AGGREGATION ? std::string(SECURE_AGGREGATION) : "";
+
+    static bool g_keys_exchanged_api = false;
+
+    monitor_.Start("UpdateOneIter");
+
+    if (secure_aggregation == "True") {
+      this->AttemptSecureKeyExchange();
+    }
 
     TrainingObserver::Instance().Update(iter);
     this->Configure();

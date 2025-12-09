@@ -212,63 +212,55 @@ class HistogramBuilder {
     if (is_distributed_ && !is_col_split_) {
       CHECK(!nodes_to_build.empty());
       auto first_nidx = nodes_to_build.front();
-
-      double *data_ptr = reinterpret_cast<double *>(this->hist_[first_nidx].data());
-      auto row = this->hist_[first_nidx];
-      auto *raw = row.data();
-
       std::size_t n = n_total_bins * nodes_to_build.size() * 2;
-      std::size_t bins = n_total_bins;
 
-      const char *uuid_env = std::getenv("ACURATIO_NODE_UUID");
-      std::string my_uuid = (uuid_env) ? std::string(uuid_env) : "";
+      const char *SECURE_AGGREGATION = std::getenv("SECURE_AGGREGATION");
+      std::string secure_aggregation = SECURE_AGGREGATION ? std::string(SECURE_AGGREGATION) : "";
 
-      printf("---------------------------------------------------\n");
-      for (auto const &[peer_uuid, peer_pub_key] : GlobalKeyStore::peer_public_keys) {
-        if (peer_uuid == my_uuid) continue;
+      if (secure_aggregation == "True") {
+        // ---- INIT SECURE AGGREGATION LOGIC ----
+        double *data_ptr = reinterpret_cast<double *>(this->hist_[first_nidx].data());
+        auto row = this->hist_[first_nidx];
+        auto *raw = row.data();
 
-        double sign = (my_uuid < peer_uuid) ? 1.0 : -1.0;
+        std::size_t bins = n_total_bins;
 
-        size_t shared_secret =
-            GlobalKeyStore::GenerateSharedSecret(GlobalKeyStore::my_private_key, peer_pub_key);
+        const char *uuid_env = std::getenv("ACURATIO_NODE_UUID");
+        std::string my_uuid = (uuid_env) ? std::string(uuid_env) : "";
 
-        std::mt19937_64 gen(shared_secret);
-        std::uniform_real_distribution<double> dist(-1000.0, 1000.0);
+        // printf("---------------------------------------------------\n");
+        for (auto const &[peer_uuid, peer_pub_key] : GlobalKeyStore::peer_public_keys) {
+          if (peer_uuid == my_uuid) continue;
 
-        for (std::size_t i = 0; i < bins; ++i) {
-          double grad_before = raw[i].GetGrad();
-          double hess_before = raw[i].GetHess();
+          double sign = (my_uuid < peer_uuid) ? 1.0 : -1.0;
 
-          double mask_grad = dist(gen);
-          double mask_hess = dist(gen);
+          size_t shared_secret =
+              GlobalKeyStore::GenerateSharedSecret(GlobalKeyStore::my_private_key, peer_pub_key);
 
-          raw[i] =
-              GradientPairPrecise(grad_before + sign * mask_grad, hess_before + sign * mask_hess);
+          std::mt19937_64 gen(shared_secret);
+          std::uniform_real_distribution<double> dist(-1000.0, 1000.0);
 
-<<<<<<< Updated upstream
-          if (!g_mask.empty() && g_mask.size() >= 2) {
-            m_grad = g_mask[0];
-            m_hess = g_mask[1];
+          for (std::size_t i = 0; i < bins; ++i) {
+            double grad_before = raw[i].GetGrad();
+            double hess_before = raw[i].GetHess();
+
+            double mask_grad = dist(gen);
+            double mask_hess = dist(gen);
+
+            raw[i] =
+                GradientPairPrecise(grad_before + sign * mask_grad, hess_before + sign * mask_hess);
+
+            // if (i < 1) {
+            //   printf("[SEC-AGG] Bin %zu | Signo: %.0f\n", i / 2, sign);
+            //   printf("   -> Grad: %.6f + (mask: %.6f) = %.6f\n", grad_before, mask_grad,
+            //          raw[i].GetGrad());
+            //   printf("   -> Hess: %.6f + (mask: %.6f) = %.6f\n", hess_before, mask_hess,
+            //          raw[i].GetHess());
+            // }
           }
-
-          if (rank == 0) {
-            // simulate server -- workerB
-            raw[i] = GradientPairPrecise(datos[0] + m_grad, datos[1] + m_hess);
-          } else {
-            // simulate client 1 -- workerA
-            raw[i] = GradientPairPrecise(datos[0] - m_grad, datos[1] - m_hess);
-=======
-          if (i < 5) {
-            printf("[SEC-AGG] Bin %zu | Signo: %.0f\n", i / 2, sign);
-            printf("   -> Grad: %.6f + (mask: %.6f) = %.6f\n", grad_before, mask_grad,
-                   raw[i].GetGrad());
-            printf("   -> Hess: %.6f + (mask: %.6f) = %.6f\n", hess_before, mask_hess,
-                   raw[i].GetHess());
->>>>>>> Stashed changes
-          }
+          // printf("[SEC-AGG] Peer %s, Signo %.0f aplicado.\n", peer_uuid.c_str(), sign);
         }
-        printf("[SEC-AGG] Peer %s, Signo %.0f aplicado.\n", peer_uuid.c_str(), sign);
-        // LOG(CONSOLE) << "[SEC-AGG] Peer " << peer_uuid << ", Signo " << sign << " aplicado.";
+        // --- - END SECURE AGGREGATION LOGIC ----
       }
 
       auto rc = collective::Allreduce(
