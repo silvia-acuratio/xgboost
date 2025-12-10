@@ -10,20 +10,24 @@
 #include <dmlc/parameter.h>     // for FieldEntry, DMLC_DECLARE_FIELD, Parameter, DMLC...
 #include <dmlc/thread_local.h>  // for ThreadLocalStore
 
+#include <BigInt/BigInt.hpp>
 #include <algorithm>  // for equal, max, transform, sort, find_if, all_of
 #include <atomic>     // for atomic
 #include <cctype>     // for isalpha, isspace
 #include <chrono>
-#include <cmath>     // for isnan, isinf
-#include <cstdint>   // for int32_t, uint32_t, int64_t, uint64_t
-#include <cstdlib>   // for atoi
-#include <cstring>   // for memcpy, size_t, memset
-#include <iomanip>   // for operator<<, setiosflags
+#include <cmath>    // for isnan, isinf
+#include <cstdint>  // for int32_t, uint32_t, int64_t, uint64_t
+#include <cstdlib>  // for atoi
+#include <cstring>  // for memcpy, size_t, memset
+#include <iomanip>  // for operator<<, setiosflags
+#include <iostream>
 #include <iterator>  // for back_insert_iterator, distance, back_inserter
 #include <limits>    // for numeric_limits
 #include <memory>    // for allocator, unique_ptr, shared_ptr, operator==
 #include <mutex>     // for mutex, lock_guard
 #include <nlohmann/json.hpp>
+#include <random>
+#include <sstream>
 #include <sstream>       // for operator<<, basic_ostream, basic_ostream::opera...
 #include <stack>         // for stack
 #include <string>        // for basic_string, char_traits, operator<, string
@@ -1115,9 +1119,9 @@ class LearnerImpl : public LearnerIO {
     this->gpair_ = decltype(this->gpair_){};
   }
 
-  long long power(long long base, long long exp, long long mod) {
-    long long res = 1;
-    base = base % mod;
+  BigInt power(BigInt base, BigInt exp, BigInt mod) {
+    BigInt res = 1;
+    base %= mod;
     while (exp > 0) {
       if (exp % 2 == 1) res = (res * base) % mod;
       base = (base * base) % mod;
@@ -1126,6 +1130,25 @@ class LearnerImpl : public LearnerIO {
     return res;
   }
 
+  BigInt HexToBigInt(std::string hex) {
+    BigInt res = 0;
+    BigInt sixteen = 16;  // Base 16
+
+    for (char c : hex) {
+      int val = 0;
+      if (c >= '0' && c <= '9')
+        val = c - '0';
+      else if (c >= 'A' && c <= 'F')
+        val = c - 'A' + 10;
+      else if (c >= 'a' && c <= 'f')
+        val = c - 'a' + 10;
+      else
+        continue;  // Saltar 'x' u otros caracteres si los hubiera
+
+      res = (res * sixteen) + val;
+    }
+    return res;
+  }
   void AttemptSecureKeyExchange() {
     static bool g_keys_exchanged_api = false;
 
@@ -1152,36 +1175,74 @@ class LearnerImpl : public LearnerIO {
       std::string action = "key_exchange";
       std::string url = api_scheme + "://" + api_ip + "/" + endpoint + "/" + node_uuid;
 
-      // LOG(CONSOLE) << "URL de la API: " << url;
+      LOG(CONSOLE) << "Generacion de la clave publica...";
 
       // -- Generacion de CLAVES  --
 
-      long long prime = 2147483647;
-      long long generator = 16807;
+      std::string prime_hex =
+          "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08"
+          "798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED"
+          "6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48"
+          "361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC98"
+          "04F1746C08CA237327FFFFFFFFFFFFFFFF";
+      BigInt prime = HexToBigInt(prime_hex);
+      BigInt generator(2);
       std::random_device rd;
       std::mt19937_64 gen(rd());
-      std::uniform_int_distribution<long long> dis(1, prime - 2);
+      std::uniform_int_distribution<unsigned short> byte_dist(0, 255);
 
-      long long private_key = dis(gen);                             // p = random
-      long long public_key = power(generator, private_key, prime);  // g^a mod p
+      std::string private_key_hex = "";
 
-      // LOG(CONSOLE) << "[XGBoost-Hook] Claves generadas. Pública: " << public_key
-      //              << ", Privada: " << private_key;
+      std::ifstream urandom("/dev/urandom", std::ios::in | std::ios::binary);
+
+      if (urandom) {
+        unsigned char buffer[32];
+        urandom.read(reinterpret_cast<char*>(buffer), 32);
+        urandom.close();
+
+        std::ostringstream hex_stream;
+        hex_stream << std::hex << std::setfill('0');
+        for (int i = 0; i < 32; ++i) {
+          hex_stream << std::setw(2) << static_cast<int>(buffer[i]);
+        }
+        private_key_hex = hex_stream.str();
+      } else {
+        std::random_device rd;
+        std::mt19937_64 gen(rd());
+        std::uniform_int_distribution<unsigned short> byte_dist(0, 255);
+        const char hex_chars[] = "0123456789ABCDEF";
+        for (int i = 0; i < 32; i++) {
+          int random_byte = byte_dist(gen);
+          private_key_hex += hex_chars[(random_byte >> 4) & 0xF];
+          private_key_hex += hex_chars[random_byte & 0xF];
+        }
+        LOG(WARNING) << "ADVERTENCIA: Usando RNG inseguro por fallo en /dev/urandom";
+      }
+
+      BigInt private_key = HexToBigInt(private_key_hex);
+
+      private_key = (private_key % (prime - 2)) + 1;
+
+      BigInt public_key = power(generator, private_key, prime);  // calculo pesado
+
+      std::string my_public_key;
+      std::ostringstream oss;
+      oss << public_key;
+      my_public_key = oss.str();
 
       // -- End generacion de CLAVES --
 
-      std::string my_public_key = std::to_string(public_key);
+      LOG(CONSOLE) << "Intercambio de claves con la API...";
+
       std::string json_payload = "{\"public_key\": \"" + my_public_key + "\"}";
 
       if (access_token.empty() || node_uuid.empty()) {
-        // LOG(WARNING) << "[XGBoost-Hook] Error: Token o UUID no encontrado.";
+        LOG(WARNING) << "[XGBoost-Hook] Error: Token o UUID no encontrado.";
       } else {
         try {
-          // LOG(CONSOLE) << "[XGBoost-Hook] Try de la api";
-
           // PUT
           std::string cmd_put =
-              "curl -X PUT -s "
+              "curl -X PUT -s -o /dev/null "
               "-H \"Host: " +
               api_ip +
               "\" "
@@ -1195,27 +1256,19 @@ class LearnerImpl : public LearnerIO {
               "\"" +
               url + "?action=" + action + "\"";
 
-          // LOG(CONSOLE) << "[XGBoost-Hook] Ejecutando PUT CURL...";
-
           int status_code = std::system(cmd_put.c_str());
 
           if (status_code != 0) {
             LOG(WARNING) << "[XGBoost-Hook] Error en la ejecución de CURL, código: " << status_code;
           }
-          // else {
-          //   LOG(CONSOLE) << "[XGBoost-Hook] PUT CURL ejecutado correctamente.";
-          // }
 
           // GET
-          int max_retries = 300;
+          int max_retries = 600;
           bool ready = false;
           using json = nlohmann::json;
 
           for (int i = 0; i < max_retries; i++) {
             std::string tmp_file = "/tmp/dh_response_" + node_uuid + ".json";
-
-            // LOG(CONSOLE) << "[XGBoost-Hook] Ejecutando GET CURL...";
-
             std::string cmd_get =
                 "curl -X GET -s "
                 "-H \"Host: " +
@@ -1236,15 +1289,10 @@ class LearnerImpl : public LearnerIO {
                            << status_code;
               break;
             }
-            // else {
-            //   LOG(CONSOLE) << "[XGBoost-Hook] GET CURL ejecutado correctamente.";
-            // }
 
             std::ifstream file(tmp_file);
 
             if (file.is_open()) {
-              // LOG(CONSOLE) << "[XGBoost-Hook] Archivo de respuesta abierto correctamente.";
-
               json j = json::parse(file);
 
               if (j.contains("wait")) {
@@ -1255,19 +1303,13 @@ class LearnerImpl : public LearnerIO {
                 std::this_thread::sleep_for(std::chrono::seconds(wait_seconds));
               }
               if (j.contains("other_keys")) {
-                // LOG(CONSOLE) << "[XGBoost-Hook] Sincronización OK.";
-
                 // almacenamiento claves
                 xgboost::tree::GlobalKeyStore::peer_public_keys.clear();
 
                 for (auto& element : j["other_keys"].items()) {
                   std::string remote_uuid = element.key();
                   std::string key = element.value();
-
                   xgboost::tree::GlobalKeyStore::peer_public_keys[remote_uuid] = key;
-                  // LOG(CONSOLE) << "[Clave recibida]:"
-                  //              << xgboost::tree::GlobalKeyStore::peer_public_keys[remote_uuid];
-                  // LOG(CONSOLE) << " -> Nodo:" << remote_uuid << " OK.";
                 }
                 ready = true;
                 break;
@@ -1304,7 +1346,6 @@ class LearnerImpl : public LearnerIO {
         }
       }
     }
-    // LOG(CONSOLE) << "--------------------------------";
 
     g_keys_exchanged_api = true;
 
