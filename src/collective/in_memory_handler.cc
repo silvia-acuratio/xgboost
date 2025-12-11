@@ -3,17 +3,19 @@
  */
 #include "in_memory_handler.h"
 
+// TODO see if these includes are all necessary
 #include <algorithm>
 #include <cstddef>
 #include <functional>
 #include <unordered_map>
 #include <utility>
 
-namespace xgboost::collective {
-std::size_t g_expected_hist_bytes = 0;
-std::size_t g_expected_hist_bins = 0;
-std::size_t g_expected_hist_nodes = 0;
-}  // namespace xgboost::collective
+// TODO Remove debug globals
+// namespace xgboost::collective {
+// std::size_t g_expected_hist_bytes = 0;
+// std::size_t g_expected_hist_bins = 0;
+// std::size_t g_expected_hist_nodes = 0;
+// }  // namespace xgboost::collective
 
 namespace xgboost::collective {
 /**
@@ -124,26 +126,24 @@ class AllreduceFunctor {
                        [](T a, T b) { return std::min(a, b); });
         break;
       case Op::kSum: {
-        // T prev_g = buffer[0];  // workerB
-        // T prev_h = buffer[1];
-        // T add_g = input[0];  // workerA
-        // T add_h = input[1];
+        T prev_g = buffer[0];  // workerB
+        T prev_h = buffer[1];
+        T add_g = input[0];  // workerA
+        T add_h = input[1];
         std::transform(buffer, buffer + size, input, buffer, std::plus<T>());
-        // T suma_g = buffer[0];
-        // T suma_h = buffer[1];
+        T suma_g = buffer[0];
+        T suma_h = buffer[1];
 
-        // int i = 0;
-        // if (size * sizeof(T) >= 4000) {
-        //   if (i < 1) {
-        //     printf(
-        //         "[AllreduceFunctor SUM] g(workerB=%f + workerA=%f ) = %f | h(workerB=%f + workerA
-        //         "
-        //         "= "
-        //         "% f) = %f\n",
-        //         prev_g, add_g, suma_g, prev_h, add_h, suma_h);
-        //     i++;
-        //   }
-        // }
+        int i = 0;
+        if (size * sizeof(T) >= 4000) {
+          if (i < 1) {
+            printf(
+                "[AllreduceFunctor SUM] g(workerB=%f + workerA=%f ) = %f | h(workerB=%f + "
+                "workerA=%f = %f\n",
+                prev_g, add_g, suma_g, prev_h, add_h, suma_h);
+            i++;
+          }
+        }
       } break;
       case Op::kBitwiseAND:
       case Op::kBitwiseOR:

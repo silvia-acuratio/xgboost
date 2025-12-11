@@ -27,7 +27,6 @@
 #include <mutex>     // for mutex, lock_guard
 #include <nlohmann/json.hpp>
 #include <random>
-#include <sstream>
 #include <sstream>       // for operator<<, basic_ostream, basic_ostream::opera...
 #include <stack>         // for stack
 #include <string>        // for basic_string, char_traits, operator<, string
@@ -1149,18 +1148,22 @@ class LearnerImpl : public LearnerIO {
     }
     return res;
   }
+
   void AttemptSecureKeyExchange() {
     static bool g_keys_exchanged_api = false;
 
+    // Check if the key exchange has already been completes to avoid redundant executions.
     if (g_keys_exchanged_api) {
       return;
     }
 
-    // --- INICIO BLOQUE LLAMADA API ---
-    if (!g_keys_exchanged_api) {
-      // LOG(CONSOLE)
-      //     << "[XGBoost-Hook] Iniciando intercambio de claves al principio del entrenamiento...";
+    // --- START API KEY EXCHANGE BLOCK ---
+    // This block handles the Diffie-Hellman key exchange initialization by coordinating
+    // with an external orchestration API. It generates ephemeral keys, registers the
+    // public key, and polls for peer keys.
 
+    if (!g_keys_exchanged_api) {
+      // Retrieve configuration parameters from environment variables
       const char* token_env = std::getenv("ACURATIO_ACCESS_TOKEN");
       const char* uuid_env = std::getenv("ACURATIO_NODE_UUID");
       const char* API_SCHEME = std::getenv("API_SCHEME");
@@ -1175,10 +1178,12 @@ class LearnerImpl : public LearnerIO {
       std::string action = "key_exchange";
       std::string url = api_scheme + "://" + api_ip + "/" + endpoint + "/" + node_uuid;
 
-      LOG(CONSOLE) << "Generacion de la clave publica...";
+      LOG(CONSOLE) << "Generating public key...";
 
-      // -- Generacion de CLAVES  --
+      // -- Cryptographic Key Generation (Diffie-Hellman)  --
 
+      // Define the standard large prime (Hex format) for the group parameters.
+      // This corresponds to a specific RFC 3526 MODP Group.
       std::string prime_hex =
           "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08"
           "798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED"
@@ -1187,12 +1192,10 @@ class LearnerImpl : public LearnerIO {
           "04F1746C08CA237327FFFFFFFFFFFFFFFF";
       BigInt prime = HexToBigInt(prime_hex);
       BigInt generator(2);
-      std::random_device rd;
-      std::mt19937_64 gen(rd());
-      std::uniform_int_distribution<unsigned short> byte_dist(0, 255);
 
       std::string private_key_hex = "";
 
+      // Attempt to read from /dev/urandom for cryptographically secure entropy.
       std::ifstream urandom("/dev/urandom", std::ios::in | std::ios::binary);
 
       if (urandom) {
@@ -1207,6 +1210,7 @@ class LearnerImpl : public LearnerIO {
         }
         private_key_hex = hex_stream.str();
       } else {
+        // Fallback: Use MT19937 if system entropy is unavailable (Warning: Less secure).
         std::random_device rd;
         std::mt19937_64 gen(rd());
         std::uniform_int_distribution<unsigned short> byte_dist(0, 255);
@@ -1216,31 +1220,33 @@ class LearnerImpl : public LearnerIO {
           private_key_hex += hex_chars[(random_byte >> 4) & 0xF];
           private_key_hex += hex_chars[random_byte & 0xF];
         }
-        LOG(WARNING) << "ADVERTENCIA: Usando RNG inseguro por fallo en /dev/urandom";
+        LOG(WARNING) << "WARNING: Using insecure RNG due to /dev/urandom failure";
       }
 
       BigInt private_key = HexToBigInt(private_key_hex);
 
+      // Ensure private key is within range [1, prime - 2].
       private_key = (private_key % (prime - 2)) + 1;
 
-      BigInt public_key = power(generator, private_key, prime);  // calculo pesado
-
+      // Compute Public Key: p+ = g^p- mod p.
+      // Note: This is computationally intensive operation.
+      BigInt public_key = power(generator, private_key, prime);
       std::string my_public_key;
       std::ostringstream oss;
       oss << public_key;
       my_public_key = oss.str();
 
-      // -- End generacion de CLAVES --
+      // -- End Key Generation --
 
-      LOG(CONSOLE) << "Intercambio de claves con la API...";
+      LOG(CONSOLE) << "Exchange keys with API...";
 
       std::string json_payload = "{\"public_key\": \"" + my_public_key + "\"}";
 
       if (access_token.empty() || node_uuid.empty()) {
-        LOG(WARNING) << "[XGBoost-Hook] Error: Token o UUID no encontrado.";
+        LOG(WARNING) << "[XGBoost-Hook] Error: Token or UUID not found.";
       } else {
         try {
-          // PUT
+          // 1. HTTP PUT: Register this node's public key with the orchestration API.
           std::string cmd_put =
               "curl -X PUT -s -o /dev/null "
               "-H \"Host: " +
@@ -1259,11 +1265,11 @@ class LearnerImpl : public LearnerIO {
           int status_code = std::system(cmd_put.c_str());
 
           if (status_code != 0) {
-            LOG(WARNING) << "[XGBoost-Hook] Error en la ejecución de CURL, código: " << status_code;
+            LOG(WARNING) << "[XGBoost-Hook] Error executing CURL, code: " << status_code;
           }
 
-          // GET
-          int max_retries = 600;
+          // 2. HTTP GET: Poll the server for peer public keys.
+          int max_retries = 900;
           bool ready = false;
           using json = nlohmann::json;
 
@@ -1285,8 +1291,7 @@ class LearnerImpl : public LearnerIO {
 
             int status_code = std::system(cmd_get.c_str());
             if (status_code != 0) {
-              LOG(WARNING) << "[XGBoost-Hook] Error en la ejecución de CURL, código: "
-                           << status_code;
+              LOG(WARNING) << "[XGBoost-Hook] Error executing CURL, code: " << status_code;
               break;
             }
 
@@ -1295,15 +1300,16 @@ class LearnerImpl : public LearnerIO {
             if (file.is_open()) {
               json j = json::parse(file);
 
+              // Handle server-side backoff request.
               if (j.contains("wait")) {
-                // time sleep
                 int wait_seconds = j.value("wait", 1);
-                LOG(WARNING) << "[XGBoost-Hook] API solicita esperar " << wait_seconds
-                             << " segundos.";
+                LOG(WARNING) << "[XGBoost-Hook] API requests to wait " << wait_seconds
+                             << " seconds.";
                 std::this_thread::sleep_for(std::chrono::seconds(wait_seconds));
               }
+
+              // Process received keys if available.
               if (j.contains("other_keys")) {
-                // almacenamiento claves
                 xgboost::tree::GlobalKeyStore::peer_public_keys.clear();
 
                 for (auto& element : j["other_keys"].items()) {
@@ -1315,9 +1321,9 @@ class LearnerImpl : public LearnerIO {
                 break;
               }
             }
-            if (!ready) {
-              LOG(WARNING) << "[XGBoost-Hook] Timeout esperando claves de los nodos.";
-            }
+          }
+          if (!ready) {
+            LOG(WARNING) << "[XGBoost-Hook] Timeout waiting for keys from nodes.";
           }
 
           // // DELETE
@@ -1332,7 +1338,8 @@ class LearnerImpl : public LearnerIO {
               "\"" +
               url + "?action=" + "current_node" + "\"";
         } catch (const std::exception& e) {
-          LOG(WARNING) << "[XGBoost-Hook] Exception capturada durante la llamada a la API.";
+          LOG(WARNING) << "[XGBoost-Hook] Exception caught during API call.";
+          // Emergency Cleanup: Attempt to reset the session on failure.
           std::string cmd_delete =
               "curl -X DELETE -s "
               "-H \"Host: " +
@@ -1349,7 +1356,7 @@ class LearnerImpl : public LearnerIO {
 
     g_keys_exchanged_api = true;
 
-    // --- FIN BLOQUE LLAMADA API ---
+    // --- END API KEY EXCHANGE BLOCK ---
   }
 
   void UpdateOneIter(int iter, std::shared_ptr<DMatrix> train) override {

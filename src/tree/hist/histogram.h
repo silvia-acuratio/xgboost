@@ -35,22 +35,10 @@
 
 namespace xgboost::tree {
 struct GlobalKeyStore {
-  static std::string my_private_key;
-  static std::string my_public_key;
   static std::map<std::string, std::string> peer_public_keys;
-  static bool keys_exchanged;
-
-  static size_t GenerateSharedSecret(const std::string &my_priv, const std::string &peer_pub) {
-    std::hash<std::string> hasher;
-    size_t seed = 0;
-    return hasher(my_priv) ^ hasher(peer_pub);
-  }
 };
 
-inline std::string GlobalKeyStore::my_private_key = "";
-inline std::string GlobalKeyStore::my_public_key = "";
 inline std::map<std::string, std::string> GlobalKeyStore::peer_public_keys = {};
-inline bool GlobalKeyStore::keys_exchanged = false;
 
 /**
  * @brief Decide which node as the build node for multi-target trees.
@@ -217,8 +205,11 @@ class HistogramBuilder {
       const char *SECURE_AGGREGATION = std::getenv("SECURE_AGGREGATION");
       std::string secure_aggregation = SECURE_AGGREGATION ? std::string(SECURE_AGGREGATION) : "";
 
+      // Check if Secure Aggregation is enabled via environment configuration.
       if (secure_aggregation == "True") {
-        // ---- INIT SECURE AGGREGATION LOGIC ----
+        // ---- START SECURE AGGREGATION LOGIC ----
+
+        // Acquire direct access to the raw histogram data (gradients and hessians).
         double *data_ptr = reinterpret_cast<double *>(this->hist_[first_nidx].data());
         auto row = this->hist_[first_nidx];
         auto *raw = row.data();
@@ -228,37 +219,61 @@ class HistogramBuilder {
         const char *uuid_env = std::getenv("ACURATIO_NODE_UUID");
         std::string my_uuid = (uuid_env) ? std::string(uuid_env) : "";
 
-        // printf("---------------------------------------------------\n");
+        printf("---------------------------------------------------\n");
+
+        // Iterate through all know peer nodes to establish pairwise masking.
         for (auto const &[peer_uuid, peer_pub_key] : GlobalKeyStore::peer_public_keys) {
+          // Skip self-processing
           if (peer_uuid == my_uuid) continue;
 
+          printf("[SEC-AGG] My uuid: %s\n", my_uuid.c_str());
+          printf("[SEC-AGG] Processing peer %s\n", peer_uuid.c_str());
+
+          // 1. Canonical Ordering:
+          // Sort UUIDs lexicographically to ensure both peers derive the exact same
+          // concatenation string, regardless of who is the initiator.
+          std::string first_id = (my_uuid < peer_uuid) ? my_uuid : peer_uuid;
+          std::string second_id = (my_uuid < peer_uuid) ? peer_uuid : my_uuid;
+
+          // 2.Deterministic Seed Generation:
+          // Generate a shared secret seed by hasing the canonically sorted IDs.
+          // This guarantees both nodes initialize their RNG with the same seed.
+          std::size_t shared_secret = std::hash<std::string>{}(first_id + "_" + second_id);
+
+          // 3. Polarity Assignment:
+          // Determine the mask sign (+1 or -1) based on UUID comparison.
+          // This ensures that if Node A adds the noise, Node B subtracts it, and vice versa.
+          // resulting in a zero-sum cancellation during the AllReduce step.
           double sign = (my_uuid < peer_uuid) ? 1.0 : -1.0;
 
-          size_t shared_secret =
-              GlobalKeyStore::GenerateSharedSecret(GlobalKeyStore::my_private_key, peer_pub_key);
-
+          // Initialize the PRNG with the derived shared secret.
           std::mt19937_64 gen(shared_secret);
           std::uniform_real_distribution<double> dist(-1000.0, 1000.0);
 
+          // 4. Noise Injection:
+          // Iterate through each histogram bins and perturb the gradients and hessians.
           for (std::size_t i = 0; i < bins; ++i) {
             double grad_before = raw[i].GetGrad();
             double hess_before = raw[i].GetHess();
 
+            // Generate deterministic noise (mask) for this bin.
             double mask_grad = dist(gen);
             double mask_hess = dist(gen);
 
+            // Apply the mask with the calculated polarity.
             raw[i] =
                 GradientPairPrecise(grad_before + sign * mask_grad, hess_before + sign * mask_hess);
 
-            // if (i < 1) {
-            //   printf("[SEC-AGG] Bin %zu | Signo: %.0f\n", i / 2, sign);
-            //   printf("   -> Grad: %.6f + (mask: %.6f) = %.6f\n", grad_before, mask_grad,
-            //          raw[i].GetGrad());
-            //   printf("   -> Hess: %.6f + (mask: %.6f) = %.6f\n", hess_before, mask_hess,
-            //          raw[i].GetHess());
-            // }
+            // Audit logging for the first bin (verification purposes).
+            if (i < 1) {
+              printf("[SEC-AGG] Bin %zu | Sign: %.0f\n", i / 2, sign);
+              printf("   -> Grad: %.6f + (mask: %.6f) = %.6f\n", grad_before, mask_grad,
+                     raw[i].GetGrad());
+              printf("   -> Hess: %.6f + (mask: %.6f) = %.6f\n", hess_before, mask_hess,
+                     raw[i].GetHess());
+            }
           }
-          // printf("[SEC-AGG] Peer %s, Signo %.0f aplicado.\n", peer_uuid.c_str(), sign);
+          printf("[SEC-AGG] Peer %s, Sign %.0f applied.\n", peer_uuid.c_str(), sign);
         }
         // --- - END SECURE AGGREGATION LOGIC ----
       }
