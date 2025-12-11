@@ -205,6 +205,9 @@ class HistogramBuilder {
       const char *SECURE_AGGREGATION = std::getenv("SECURE_AGGREGATION");
       std::string secure_aggregation = SECURE_AGGREGATION ? std::string(SECURE_AGGREGATION) : "";
 
+      const char *FLAGS = std::getenv("XGBOOST_HOOK_FLAGS");
+      std::string hook_flags = FLAGS ? std::string(FLAGS) : "";
+
       // Check if Secure Aggregation is enabled via environment configuration.
       if (secure_aggregation == "True") {
         // ---- START SECURE AGGREGATION LOGIC ----
@@ -219,15 +222,17 @@ class HistogramBuilder {
         const char *uuid_env = std::getenv("ACURATIO_NODE_UUID");
         std::string my_uuid = (uuid_env) ? std::string(uuid_env) : "";
 
-        printf("---------------------------------------------------\n");
+        if (hook_flags == "True") printf("---------------------------------------------------\n");
 
         // Iterate through all know peer nodes to establish pairwise masking.
         for (auto const &[peer_uuid, peer_pub_key] : GlobalKeyStore::peer_public_keys) {
           // Skip self-processing
           if (peer_uuid == my_uuid) continue;
 
-          printf("[SEC-AGG] My uuid: %s\n", my_uuid.c_str());
-          printf("[SEC-AGG] Processing peer %s\n", peer_uuid.c_str());
+          if (hook_flags == "True") {
+            printf("[SEC-AGG] My uuid: %s\n", my_uuid.c_str());
+            printf("[SEC-AGG] Processing peer %s\n", peer_uuid.c_str());
+          }
 
           // 1. Canonical Ordering:
           // Sort UUIDs lexicographically to ensure both peers derive the exact same
@@ -264,16 +269,19 @@ class HistogramBuilder {
             raw[i] =
                 GradientPairPrecise(grad_before + sign * mask_grad, hess_before + sign * mask_hess);
 
-            // Audit logging for the first bin (verification purposes).
-            if (i < 1) {
-              printf("[SEC-AGG] Bin %zu | Sign: %.0f\n", i / 2, sign);
-              printf("   -> Grad: %.6f + (mask: %.6f) = %.6f\n", grad_before, mask_grad,
-                     raw[i].GetGrad());
-              printf("   -> Hess: %.6f + (mask: %.6f) = %.6f\n", hess_before, mask_hess,
-                     raw[i].GetHess());
+            if (hook_flags == "True") {
+              // Audit logging for the first bin (verification purposes).
+              if (i < 1) {
+                printf("[SEC-AGG] Bin %zu | Sign: %.0f\n", i / 2, sign);
+                printf("   -> Grad: %.6f + (mask: %.6f) = %.6f\n", grad_before, mask_grad,
+                       raw[i].GetGrad());
+                printf("   -> Hess: %.6f + (mask: %.6f) = %.6f\n", hess_before, mask_hess,
+                       raw[i].GetHess());
+              }
             }
           }
-          printf("[SEC-AGG] Peer %s, Sign %.0f applied.\n", peer_uuid.c_str(), sign);
+          if (hook_flags == "True")
+            printf("[SEC-AGG] Peer %s, Sign %.0f applied.\n", peer_uuid.c_str(), sign);
         }
         // --- - END SECURE AGGREGATION LOGIC ----
       }

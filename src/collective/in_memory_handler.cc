@@ -133,15 +133,19 @@ class AllreduceFunctor {
         std::transform(buffer, buffer + size, input, buffer, std::plus<T>());
         T suma_g = buffer[0];
         T suma_h = buffer[1];
+        const char* FLAGS = std::getenv("XGBOOST_HOOK_FLAGS");
+        std::string hook_flags = FLAGS ? std::string(FLAGS) : "";
 
-        int i = 0;
-        if (size * sizeof(T) >= 4000) {
-          if (i < 1) {
-            printf(
-                "[AllreduceFunctor SUM] g(workerB=%f + workerA=%f ) = %f | h(workerB=%f + "
-                "workerA=%f = %f\n",
-                prev_g, add_g, suma_g, prev_h, add_h, suma_h);
-            i++;
+        if (hook_flags == "True") {
+          int i = 0;
+          if (size * sizeof(T) >= 4000) {
+            if (i < 1) {
+              printf(
+                  "[AllreduceFunctor SUM] g(workerB=%f + workerA=%f ) = %f | h(workerB=%f + "
+                  "workerA=%f = %f\n",
+                  prev_g, add_g, suma_g, prev_h, add_h, suma_h);
+              i++;
+            }
           }
         }
       } break;

@@ -1168,17 +1168,19 @@ class LearnerImpl : public LearnerIO {
       const char* uuid_env = std::getenv("ACURATIO_NODE_UUID");
       const char* API_SCHEME = std::getenv("API_SCHEME");
       const char* API_IP = std::getenv("API_IP_ADDRESS");
+      const char* FLAGS = std::getenv("XGBOOST_HOOK_FLAGS");
 
       std::string access_token = (token_env) ? std::string(token_env) : "";
       std::string node_uuid = (uuid_env) ? std::string(uuid_env) : "";
       std::string api_scheme = API_SCHEME ? std::string(API_SCHEME) : "https";
       std::string api_ip = API_IP ? std::string(API_IP) : "api.acuratio.com";
+      std::string hook_flags = FLAGS ? std::string(FLAGS) : "";
 
       std::string endpoint = "dh-key-exchange";
       std::string action = "key_exchange";
       std::string url = api_scheme + "://" + api_ip + "/" + endpoint + "/" + node_uuid;
 
-      LOG(CONSOLE) << "Generating public key...";
+      if (hook_flags == "True") LOG(CONSOLE) << "Generating public key...";
 
       // -- Cryptographic Key Generation (Diffie-Hellman)  --
 
@@ -1237,8 +1239,7 @@ class LearnerImpl : public LearnerIO {
       my_public_key = oss.str();
 
       // -- End Key Generation --
-
-      LOG(CONSOLE) << "Exchange keys with API...";
+      if (hook_flags == "True") LOG(CONSOLE) << "Exchange keys with API...";
 
       std::string json_payload = "{\"public_key\": \"" + my_public_key + "\"}";
 
