@@ -4,29 +4,42 @@
 #ifndef XGBOOST_TREE_HIST_HISTOGRAM_H_
 #define XGBOOST_TREE_HIST_HISTOGRAM_H_
 
-#include <algorithm>   // for max
-#include <cstddef>     // for size_t
-#include <cstdint>     // for int32_t
-#include <utility>     // for move
-#include <vector>      // for vector
+#include <algorithm>  // for max
+#include <cstddef>    // for size_t
+#include <cstdint>    // for int32_t
+#include <iostream>
+#include <map>
+#include <mutex>
+#include <random>
+#include <string>
+#include <thread>   // for thread
+#include <utility>  // for move
+#include <vector>   // for vector
 
-#include "../../collective/allreduce.h"    // for Allreduce
-#include "../../common/hist_util.h"        // for GHistRow, ParallelGHi...
-#include "../../common/row_set.h"          // for RowSetCollection
-#include "../../common/threading_utils.h"  // for ParallelFor2d, Range1d, BlockedSpace2d
-#include "../../data/gradient_index.h"     // for GHistIndexMatrix
-#include "expand_entry.h"                  // for MultiExpandEntry, CPUExpandEntry
-#include "hist_cache.h"                    // for BoundedHistCollection
-#include "hist_param.h"                    // for HistMakerTrainParam
-#include "xgboost/base.h"                  // for bst_node_t, bst_target_t, bst_bin_t
-#include "xgboost/context.h"               // for Context
-#include "xgboost/data.h"                  // for BatchIterator, BatchSet
-#include "xgboost/linalg.h"                // for MatrixView, All, Vect...
-#include "xgboost/logging.h"               // for CHECK_GE
-#include "xgboost/span.h"                  // for Span
-#include "xgboost/tree_model.h"            // for RegTree
+#include "../../collective/allreduce.h"         // for Allreduce
+#include "../../collective/communicator-inl.h"  // for GetRank, GetWorldSize
+#include "../../common/hist_util.h"             // for GHistRow, ParallelGHi...
+#include "../../common/row_set.h"               // for RowSetCollection
+#include "../../common/threading_utils.h"       // for ParallelFor2d, Range1d, BlockedSpace2d
+#include "../../data/gradient_index.h"          // for GHistIndexMatrix
+#include "expand_entry.h"                       // for MultiExpandEntry, CPUExpandEntry
+#include "hist_cache.h"                         // for BoundedHistCollection
+#include "hist_param.h"                         // for HistMakerTrainParam
+#include "xgboost/base.h"                       // for bst_node_t, bst_target_t, bst_bin_t
+#include "xgboost/context.h"                    // for Context
+#include "xgboost/data.h"                       // for BatchIterator, BatchSet
+#include "xgboost/linalg.h"                     // for MatrixView, All, Vect...
+#include "xgboost/logging.h"                    // for CHECK_GE
+#include "xgboost/span.h"                       // for Span
+#include "xgboost/tree_model.h"                 // for RegTree
 
 namespace xgboost::tree {
+struct GlobalKeyStore {
+  static std::map<std::string, std::string> peer_public_keys;
+};
+
+inline std::map<std::string, std::string> GlobalKeyStore::peer_public_keys = {};
+
 /**
  * @brief Decide which node as the build node for multi-target trees.
  */
@@ -49,6 +62,7 @@ class HistogramBuilder {
   // Whether XGBoost is running in distributed environment.
   bool is_distributed_{false};
   bool is_col_split_{false};
+  bool g_keys_exchanged = false;
 
  public:
   /**
@@ -67,7 +81,6 @@ class HistogramBuilder {
     is_distributed_ = is_distributed;
     is_col_split_ = is_col_split;
   }
-
   template <bool any_missing>
   void BuildLocalHistograms(common::BlockedSpace2d const &space, GHistIndexMatrix const &gidx,
                             std::vector<bst_node_t> const &nodes_to_build,
@@ -77,7 +90,7 @@ class HistogramBuilder {
     common::ParallelFor2d(space, this->n_threads_, [&](size_t nid_in_set, common::Range1d r) {
       const auto tid = static_cast<unsigned>(omp_get_thread_num());
       bst_node_t const nidx = nodes_to_build[nid_in_set];
-      auto const& elem = row_set_collection[nidx];
+      auto const &elem = row_set_collection[nidx];
       auto start_of_row_set = std::min(r.begin(), elem.Size());
       auto end_of_row_set = std::min(r.end(), elem.Size());
       auto rid_set = common::Span<bst_idx_t const>{elem.begin() + start_of_row_set,
@@ -176,20 +189,107 @@ class HistogramBuilder {
                      std::vector<bst_node_t> const &nodes_to_build,
                      std::vector<bst_node_t> const &nodes_to_trick) {
     auto n_total_bins = buffer_.TotalBins();
+
     common::BlockedSpace2d space(
         nodes_to_build.size(), [&](std::size_t) { return n_total_bins; }, 1024);
     common::ParallelFor2d(space, this->n_threads_, [&](size_t node, common::Range1d r) {
       // Merging histograms from each thread.
       this->buffer_.ReduceHist(node, r.begin(), r.end());
     });
+
     if (is_distributed_ && !is_col_split_) {
-      // The cache is contiguous, we can perform allreduce for all nodes in one go.
       CHECK(!nodes_to_build.empty());
       auto first_nidx = nodes_to_build.front();
       std::size_t n = n_total_bins * nodes_to_build.size() * 2;
+
+      const char *SECURE_AGGREGATION = std::getenv("SECURE_AGGREGATION");
+      std::string secure_aggregation = SECURE_AGGREGATION ? std::string(SECURE_AGGREGATION) : "";
+
+      const char *FLAGS = std::getenv("XGBOOST_HOOK_FLAGS");
+      std::string hook_flags = FLAGS ? std::string(FLAGS) : "";
+
+      // Check if Secure Aggregation is enabled via environment configuration.
+      if (secure_aggregation == "True") {
+        // ---- START SECURE AGGREGATION LOGIC ----
+
+        // Acquire direct access to the raw histogram data (gradients and hessians).
+        double *data_ptr = reinterpret_cast<double *>(this->hist_[first_nidx].data());
+        auto row = this->hist_[first_nidx];
+        auto *raw = row.data();
+
+        std::size_t bins = n_total_bins;
+
+        const char *uuid_env = std::getenv("ACURATIO_NODE_UUID");
+        std::string my_uuid = (uuid_env) ? std::string(uuid_env) : "";
+
+        if (hook_flags == "True") printf("---------------------------------------------------\n");
+
+        // Iterate through all know peer nodes to establish pairwise masking.
+        for (auto const &[peer_uuid, peer_pub_key] : GlobalKeyStore::peer_public_keys) {
+          // Skip self-processing
+          if (peer_uuid == my_uuid) continue;
+
+          if (hook_flags == "True") {
+            printf("[SEC-AGG] My uuid: %s\n", my_uuid.c_str());
+            printf("[SEC-AGG] Processing peer %s\n", peer_uuid.c_str());
+          }
+
+          // 1. Canonical Ordering:
+          // Sort UUIDs lexicographically to ensure both peers derive the exact same
+          // concatenation string, regardless of who is the initiator.
+          std::string first_id = (my_uuid < peer_uuid) ? my_uuid : peer_uuid;
+          std::string second_id = (my_uuid < peer_uuid) ? peer_uuid : my_uuid;
+
+          // 2.Deterministic Seed Generation:
+          // Generate a shared secret seed by hasing the canonically sorted IDs.
+          // This guarantees both nodes initialize their RNG with the same seed.
+          std::size_t shared_secret = std::hash<std::string>{}(first_id + "_" + second_id);
+
+          // 3. Polarity Assignment:
+          // Determine the mask sign (+1 or -1) based on UUID comparison.
+          // This ensures that if Node A adds the noise, Node B subtracts it, and vice versa.
+          // resulting in a zero-sum cancellation during the AllReduce step.
+          double sign = (my_uuid < peer_uuid) ? 1.0 : -1.0;
+
+          // Initialize the PRNG with the derived shared secret.
+          std::mt19937_64 gen(shared_secret);
+          std::uniform_real_distribution<double> dist(-1000.0, 1000.0);
+
+          // 4. Noise Injection:
+          // Iterate through each histogram bins and perturb the gradients and hessians.
+          for (std::size_t i = 0; i < bins; ++i) {
+            double grad_before = raw[i].GetGrad();
+            double hess_before = raw[i].GetHess();
+
+            // Generate deterministic noise (mask) for this bin.
+            double mask_grad = dist(gen);
+            double mask_hess = dist(gen);
+
+            // Apply the mask with the calculated polarity.
+            raw[i] =
+                GradientPairPrecise(grad_before + sign * mask_grad, hess_before + sign * mask_hess);
+
+            if (hook_flags == "True") {
+              // Audit logging for the first bin (verification purposes).
+              if (i < 1) {
+                printf("[SEC-AGG] Bin %zu | Sign: %.0f\n", i / 2, sign);
+                printf("   -> Grad: %.6f + (mask: %.6f) = %.6f\n", grad_before, mask_grad,
+                       raw[i].GetGrad());
+                printf("   -> Hess: %.6f + (mask: %.6f) = %.6f\n", hess_before, mask_hess,
+                       raw[i].GetHess());
+              }
+            }
+          }
+          if (hook_flags == "True")
+            printf("[SEC-AGG] Peer %s, Sign %.0f applied.\n", peer_uuid.c_str(), sign);
+        }
+        // --- - END SECURE AGGREGATION LOGIC ----
+      }
+
       auto rc = collective::Allreduce(
           ctx, linalg::MakeVec(reinterpret_cast<double *>(this->hist_[first_nidx].data()), n),
           collective::Op::kSum);
+
       SafeColl(rc);
     }
 

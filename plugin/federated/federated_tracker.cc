@@ -77,8 +77,9 @@ std::future<Result> FederatedTracker::Run() {
         builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
       }
       builder.RegisterService(&service);
-      LOG(CONSOLE) << "Insecure federated server listening on " << server_address << ", world size "
-                   << this->n_workers_;
+      // LOG(CONSOLE) << "Insecure federated server listening on " << server_address << ", world
+      // size "
+      //              << this->n_workers_;
     } else {
       auto options = grpc::SslServerCredentialsOptions(
           GRPC_SSL_REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY);

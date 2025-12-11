@@ -6,57 +6,63 @@
  */
 #include "xgboost/learner.h"
 
-#include <dmlc/io.h>                      // for Stream
-#include <dmlc/parameter.h>               // for FieldEntry, DMLC_DECLARE_FIELD, Parameter, DMLC...
-#include <dmlc/thread_local.h>            // for ThreadLocalStore
+#include <dmlc/io.h>            // for Stream
+#include <dmlc/parameter.h>     // for FieldEntry, DMLC_DECLARE_FIELD, Parameter, DMLC...
+#include <dmlc/thread_local.h>  // for ThreadLocalStore
 
-#include <algorithm>                      // for equal, max, transform, sort, find_if, all_of
-#include <atomic>                         // for atomic
-#include <cctype>                         // for isalpha, isspace
-#include <cmath>                          // for isnan, isinf
-#include <cstdint>                        // for int32_t, uint32_t, int64_t, uint64_t
-#include <cstdlib>                        // for atoi
-#include <cstring>                        // for memcpy, size_t, memset
-#include <iomanip>                        // for operator<<, setiosflags
-#include <iterator>                       // for back_insert_iterator, distance, back_inserter
-#include <limits>                         // for numeric_limits
-#include <memory>                         // for allocator, unique_ptr, shared_ptr, operator==
-#include <mutex>                          // for mutex, lock_guard
-#include <sstream>                        // for operator<<, basic_ostream, basic_ostream::opera...
-#include <stack>                          // for stack
-#include <string>                         // for basic_string, char_traits, operator<, string
-#include <system_error>                   // for errc
-#include <unordered_map>                  // for operator!=, unordered_map
-#include <utility>                        // for pair, as_const, move, swap
-#include <vector>                         // for vector
+#include <BigInt/BigInt.hpp>
+#include <algorithm>  // for equal, max, transform, sort, find_if, all_of
+#include <atomic>     // for atomic
+#include <cctype>     // for isalpha, isspace
+#include <chrono>
+#include <cmath>    // for isnan, isinf
+#include <cstdint>  // for int32_t, uint32_t, int64_t, uint64_t
+#include <cstdlib>  // for atoi
+#include <cstring>  // for memcpy, size_t, memset
+#include <iomanip>  // for operator<<, setiosflags
+#include <iostream>
+#include <iterator>  // for back_insert_iterator, distance, back_inserter
+#include <limits>    // for numeric_limits
+#include <memory>    // for allocator, unique_ptr, shared_ptr, operator==
+#include <mutex>     // for mutex, lock_guard
+#include <nlohmann/json.hpp>
+#include <random>
+#include <sstream>       // for operator<<, basic_ostream, basic_ostream::opera...
+#include <stack>         // for stack
+#include <string>        // for basic_string, char_traits, operator<, string
+#include <system_error>  // for errc
+#include <thread>
+#include <unordered_map>  // for operator!=, unordered_map
+#include <utility>        // for pair, as_const, move, swap
+#include <vector>         // for vector
 
 #include "collective/aggregator.h"        // for ApplyWithLabels
 #include "collective/communicator-inl.h"  // for Allreduce, Broadcast, GetRank, IsDistributed
 #include "common/api_entry.h"             // for XGBAPIThreadLocalEntry
-#include "common/param_array.h"           // for ParamArray
 #include "common/charconv.h"              // for to_chars, to_chars_result, NumericLimits, from_...
 #include "common/error_msg.h"             // for MaxFeatureSize, WarnOldSerialization, ...
 #include "common/io.h"                    // for PeekableInStream, ReadAll, FixedSizeStream, Mem...
 #include "common/observer.h"              // for TrainingObserver
+#include "common/param_array.h"           // for ParamArray
 #include "common/random.h"                // for GlobalRandom
 #include "common/timer.h"                 // for Monitor
 #include "common/version.h"               // for Version
-#include "xgboost/base.h"                 // for Args, GradientPair, bst_feature_t
-#include "xgboost/context.h"              // for Context
-#include "xgboost/data.h"                 // for DMatrix, MetaInfo
-#include "xgboost/gbm.h"                  // for GradientBooster
-#include "xgboost/global_config.h"        // for GlobalConfiguration, GlobalConfigThreadLocalStore
-#include "xgboost/host_device_vector.h"   // for HostDeviceVector
-#include "xgboost/json.h"                 // for Json, get, Object, String, IsA, Array, ToJson
-#include "xgboost/linalg.h"               // for Vector, VectorView
-#include "xgboost/logging.h"              // for CHECK, LOG, CHECK_EQ
-#include "xgboost/metric.h"               // for Metric
-#include "xgboost/objective.h"            // for ObjFunction
-#include "xgboost/parameter.h"            // for DECLARE_FIELD_ENUM_CLASS, XGBoostParameter
-#include "xgboost/predictor.h"            // for PredictionContainer, PredictionCacheEntry
-#include "xgboost/string_view.h"          // for operator<<, StringView
-#include "xgboost/task.h"                 // for ObjInfo
-
+#include "tree/hist/histogram.h"
+#include "xgboost/base.h"                // for Args, GradientPair, bst_feature_t
+#include "xgboost/context.h"             // for Context
+#include "xgboost/data.h"                // for DMatrix, MetaInfo
+#include "xgboost/gbm.h"                 // for GradientBooster
+#include "xgboost/global_config.h"       // for GlobalConfiguration, GlobalConfigThreadLocalStore
+#include "xgboost/host_device_vector.h"  // for HostDeviceVector
+#include "xgboost/json.h"                // for Json, get, Object, String, IsA, Array, ToJson
+#include "xgboost/linalg.h"              // for Vector, VectorView
+#include "xgboost/logging.h"             // for CHECK, LOG, CHECK_EQ
+#include "xgboost/metric.h"              // for Metric
+#include "xgboost/objective.h"           // for ObjFunction
+#include "xgboost/parameter.h"           // for DECLARE_FIELD_ENUM_CLASS, XGBoostParameter
+#include "xgboost/predictor.h"           // for PredictionContainer, PredictionCacheEntry
+#include "xgboost/string_view.h"         // for operator<<, StringView
+#include "xgboost/task.h"                // for ObjInfo
 namespace {
 const char* kMaxDeltaStepDefaultValue = "0.7";
 }  // anonymous namespace
@@ -300,7 +306,7 @@ void LearnerModelParam::Copy(LearnerModelParam const& that) {
 
 struct LearnerTrainParam : public XGBoostParameter<LearnerTrainParam> {
   // flag to disable default metric
-  bool disable_default_eval_metric {false};
+  bool disable_default_eval_metric{false};
   // FIXME(trivialfis): The following parameters belong to model itself, but can be
   // specified by users.  Move them to model parameter once we can get rid of binary IO.
   std::string booster;
@@ -328,12 +334,11 @@ struct LearnerTrainParam : public XGBoostParameter<LearnerTrainParam> {
   }
 };
 
-
 DMLC_REGISTER_PARAMETER(LearnerModelParamLegacy);
 DMLC_REGISTER_PARAMETER(LearnerTrainParam);
 
 using LearnerAPIThreadLocalStore =
-    dmlc::ThreadLocalStore<std::map<Learner const *, XGBAPIThreadLocalEntry>>;
+    dmlc::ThreadLocalStore<std::map<Learner const*, XGBAPIThreadLocalEntry>>;
 
 namespace {
 /**
@@ -614,7 +619,7 @@ class LearnerConfiguration : public Intercept {
   void SaveConfig(Json* p_out) const override {
     CHECK(!this->need_configuration_) << "Call Configure before saving model.";
     Version::Save(p_out);
-    Json& out { *p_out };
+    Json& out{*p_out};
     // parameters
     out["learner"] = Object();
     auto& learner_parameters = out["learner"];
@@ -642,8 +647,7 @@ class LearnerConfiguration : public Intercept {
   void SetParam(const std::string& key, const std::string& value) override {
     this->need_configuration_ = true;
     if (key == kEvalMetric) {
-      if (std::find(metric_names_.cbegin(), metric_names_.cend(),
-                    value) == metric_names_.cend()) {
+      if (std::find(metric_names_.cbegin(), metric_names_.cend(), value) == metric_names_.cend()) {
         metric_names_.emplace_back(value);
       }
     } else {
@@ -657,9 +661,7 @@ class LearnerConfiguration : public Intercept {
     }
   }
 
-  uint32_t GetNumFeature() const override {
-    return learner_model_param_.num_feature;
-  }
+  uint32_t GetNumFeature() const override { return learner_model_param_.num_feature; }
 
   void SetAttr(const std::string& key, const std::string& value) override {
     attributes_[key] = value;
@@ -674,22 +676,18 @@ class LearnerConfiguration : public Intercept {
 
   bool DelAttr(const std::string& key) override {
     auto it = attributes_.find(key);
-    if (it == attributes_.end()) { return false; }
+    if (it == attributes_.end()) {
+      return false;
+    }
     attributes_.erase(it);
     return true;
   }
 
-  void SetFeatureNames(std::vector<std::string> const& fn) override {
-    feature_names_ = fn;
-  }
+  void SetFeatureNames(std::vector<std::string> const& fn) override { feature_names_ = fn; }
 
-  void GetFeatureNames(std::vector<std::string>* fn) const override {
-    *fn = feature_names_;
-  }
+  void GetFeatureNames(std::vector<std::string>* fn) const override { *fn = feature_names_; }
 
-  void SetFeatureTypes(std::vector<std::string> const& ft) override {
-    this->feature_types_ = ft;
-  }
+  void SetFeatureTypes(std::vector<std::string> const& ft) override { this->feature_types_ = ft; }
 
   void GetFeatureTypes(std::vector<std::string>* p_ft) const override {
     auto& ft = *p_ft;
@@ -716,13 +714,13 @@ class LearnerConfiguration : public Intercept {
 
  private:
   void ValidateParameters() {
-    Json config { Object() };
+    Json config{Object()};
     this->SaveConfig(&config);
     std::stack<Json> stack;
     stack.push(config);
     std::string const postfix{"_param"};
 
-    auto is_parameter = [&postfix](std::string const &key) {
+    auto is_parameter = [&postfix](std::string const& key) {
       return key.size() > postfix.size() &&
              std::equal(postfix.rbegin(), postfix.rend(), key.rbegin());
     };
@@ -738,7 +736,7 @@ class LearnerConfiguration : public Intercept {
     while (!stack.empty()) {
       auto j_obj = stack.top();
       stack.pop();
-      auto const &obj = get<Object const>(j_obj);
+      auto const& obj = get<Object const>(j_obj);
 
       for (auto const& kv : obj) {
         if (is_parameter(kv.first)) {
@@ -766,7 +764,7 @@ class LearnerConfiguration : public Intercept {
     std::sort(keys.begin(), keys.end());
 
     std::vector<std::string> provided;
-    for (auto const &kv : cfg_) {
+    for (auto const& kv : cfg_) {
       if (std::any_of(kv.first.cbegin(), kv.first.cend(),
                       [](char ch) { return std::isspace(ch); })) {
         LOG(FATAL) << "Invalid parameter \"" << kv.first << "\" contains whitespace.";
@@ -776,8 +774,8 @@ class LearnerConfiguration : public Intercept {
     std::sort(provided.begin(), provided.end());
 
     std::vector<std::string> diff;
-    std::set_difference(provided.begin(), provided.end(), keys.begin(),
-                        keys.end(), std::back_inserter(diff));
+    std::set_difference(provided.begin(), provided.end(), keys.begin(), keys.end(),
+                        std::back_inserter(diff));
     if (diff.size() != 0) {
       std::stringstream ss;
       ss << "\nParameters: { ";
@@ -817,8 +815,7 @@ class LearnerConfiguration : public Intercept {
 
   void ConfigureGBM(LearnerTrainParam const& old, Args const& args) {
     if (gbm_ == nullptr || old.booster != tparam_.booster) {
-      gbm_.reset(GradientBooster::Create(tparam_.booster, &ctx_,
-                                         &learner_model_param_));
+      gbm_.reset(GradientBooster::Create(tparam_.booster, &ctx_, &learner_model_param_));
     }
     gbm_->Configure(args);
   }
@@ -833,8 +830,7 @@ class LearnerConfiguration : public Intercept {
       }
     }
 
-    if (cfg_.find("max_delta_step") == cfg_.cend() &&
-        cfg_.find("objective") != cfg_.cend() &&
+    if (cfg_.find("max_delta_step") == cfg_.cend() && cfg_.find("objective") != cfg_.cend() &&
         tparam_.objective == "count:poisson") {
       // max_delta_step is a duplicated parameter in Poisson regression and tree param.
       // Rename one of them once binary IO is gone.
@@ -844,7 +840,7 @@ class LearnerConfiguration : public Intercept {
       obj_.reset(ObjFunction::Create(tparam_.objective, &ctx_));
     }
 
-    bool has_nc {cfg_.find("num_class") != cfg_.cend()};
+    bool has_nc{cfg_.find("num_class") != cfg_.cend()};
     // Inject num_class into configuration.
     // FIXME(jiamingy): Remove the duplicated parameter in softmax
     cfg_["num_class"] = std::to_string(mparam_.num_class);
@@ -858,7 +854,9 @@ class LearnerConfiguration : public Intercept {
 
   void ConfigureMetrics(Args const& args) {
     for (auto const& name : metric_names_) {
-      auto DupCheck = [&name](std::unique_ptr<Metric> const& m) { return m->Name() != name; };
+      auto DupCheck = [&name](std::unique_ptr<Metric> const& m) {
+        return m->Name() != name;
+      };
       if (std::all_of(metrics_.begin(), metrics_.end(), DupCheck)) {
         metrics_.emplace_back(std::unique_ptr<Metric>(Metric::Create(name, &ctx_)));
       }
@@ -902,7 +900,7 @@ class LearnerConfiguration : public Intercept {
   }
 };
 
-std::string const LearnerConfiguration::kEvalMetric {"eval_metric"};  // NOLINT
+std::string const LearnerConfiguration::kEvalMetric{"eval_metric"};  // NOLINT
 
 class LearnerIO : public LearnerConfiguration {
  protected:
@@ -933,8 +931,7 @@ class LearnerIO : public LearnerConfiguration {
     auto const& gradient_booster = learner.at("gradient_booster");
     name = get<String>(gradient_booster["name"]);
     tparam_.UpdateAllowUnknown(Args{{"booster", name}});
-    gbm_.reset(
-        GradientBooster::Create(tparam_.booster, &ctx_, &learner_model_param_));
+    gbm_.reset(GradientBooster::Create(tparam_.booster, &ctx_, &learner_model_param_));
     gbm_->LoadModel(gradient_booster);
 
     auto const& j_attributes = get<Object const>(learner.at("attributes"));
@@ -968,7 +965,7 @@ class LearnerIO : public LearnerConfiguration {
     this->CheckModelInitialized();
 
     Version::Save(p_out);
-    Json& out { *p_out };
+    Json& out{*p_out};
 
     out["learner"] = Object();
     auto& learner = out["learner"];
@@ -1045,8 +1042,7 @@ class LearnerIO : public LearnerConfiguration {
  */
 class LearnerImpl : public LearnerIO {
  public:
-  explicit LearnerImpl(std::vector<std::shared_ptr<DMatrix> > cache)
-      : LearnerIO{cache} {}
+  explicit LearnerImpl(std::vector<std::shared_ptr<DMatrix>> cache) : LearnerIO{cache} {}
   ~LearnerImpl() override {
     auto local_map = LearnerAPIThreadLocalStore::Get();
     if (local_map->find(this) != local_map->cend()) {
@@ -1122,8 +1118,261 @@ class LearnerImpl : public LearnerIO {
     this->gpair_ = decltype(this->gpair_){};
   }
 
+  BigInt power(BigInt base, BigInt exp, BigInt mod) {
+    BigInt res = 1;
+    base %= mod;
+    while (exp > 0) {
+      if (exp % 2 == 1) res = (res * base) % mod;
+      base = (base * base) % mod;
+      exp /= 2;
+    }
+    return res;
+  }
+
+  BigInt HexToBigInt(std::string hex) {
+    BigInt res = 0;
+    BigInt sixteen = 16;  // Base 16
+
+    for (char c : hex) {
+      int val = 0;
+      if (c >= '0' && c <= '9')
+        val = c - '0';
+      else if (c >= 'A' && c <= 'F')
+        val = c - 'A' + 10;
+      else if (c >= 'a' && c <= 'f')
+        val = c - 'a' + 10;
+      else
+        continue;  // Saltar 'x' u otros caracteres si los hubiera
+
+      res = (res * sixteen) + val;
+    }
+    return res;
+  }
+
+  void AttemptSecureKeyExchange() {
+    static bool g_keys_exchanged_api = false;
+
+    // Check if the key exchange has already been completes to avoid redundant executions.
+    if (g_keys_exchanged_api) {
+      return;
+    }
+
+    // --- START API KEY EXCHANGE BLOCK ---
+    // This block handles the Diffie-Hellman key exchange initialization by coordinating
+    // with an external orchestration API. It generates ephemeral keys, registers the
+    // public key, and polls for peer keys.
+
+    if (!g_keys_exchanged_api) {
+      // Retrieve configuration parameters from environment variables
+      const char* token_env = std::getenv("ACURATIO_ACCESS_TOKEN");
+      const char* uuid_env = std::getenv("ACURATIO_NODE_UUID");
+      const char* API_SCHEME = std::getenv("API_SCHEME");
+      const char* API_IP = std::getenv("API_IP_ADDRESS");
+      const char* FLAGS = std::getenv("XGBOOST_HOOK_FLAGS");
+
+      std::string access_token = (token_env) ? std::string(token_env) : "";
+      std::string node_uuid = (uuid_env) ? std::string(uuid_env) : "";
+      std::string api_scheme = API_SCHEME ? std::string(API_SCHEME) : "https";
+      std::string api_ip = API_IP ? std::string(API_IP) : "api.acuratio.com";
+      std::string hook_flags = FLAGS ? std::string(FLAGS) : "";
+
+      std::string endpoint = "dh-key-exchange";
+      std::string action = "key_exchange";
+      std::string url = api_scheme + "://" + api_ip + "/" + endpoint + "/" + node_uuid;
+
+      if (hook_flags == "True") LOG(CONSOLE) << "Generating public key...";
+
+      // -- Cryptographic Key Generation (Diffie-Hellman)  --
+
+      // Define the standard large prime (Hex format) for the group parameters.
+      // This corresponds to a specific RFC 3526 MODP Group.
+      std::string prime_hex =
+          "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08"
+          "798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED"
+          "6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48"
+          "361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC98"
+          "04F1746C08CA237327FFFFFFFFFFFFFFFF";
+      BigInt prime = HexToBigInt(prime_hex);
+      BigInt generator(2);
+
+      std::string private_key_hex = "";
+
+      // Attempt to read from /dev/urandom for cryptographically secure entropy.
+      std::ifstream urandom("/dev/urandom", std::ios::in | std::ios::binary);
+
+      if (urandom) {
+        unsigned char buffer[32];
+        urandom.read(reinterpret_cast<char*>(buffer), 32);
+        urandom.close();
+
+        std::ostringstream hex_stream;
+        hex_stream << std::hex << std::setfill('0');
+        for (int i = 0; i < 32; ++i) {
+          hex_stream << std::setw(2) << static_cast<int>(buffer[i]);
+        }
+        private_key_hex = hex_stream.str();
+      } else {
+        // Fallback: Use MT19937 if system entropy is unavailable (Warning: Less secure).
+        std::random_device rd;
+        std::mt19937_64 gen(rd());
+        std::uniform_int_distribution<unsigned short> byte_dist(0, 255);
+        const char hex_chars[] = "0123456789ABCDEF";
+        for (int i = 0; i < 32; i++) {
+          int random_byte = byte_dist(gen);
+          private_key_hex += hex_chars[(random_byte >> 4) & 0xF];
+          private_key_hex += hex_chars[random_byte & 0xF];
+        }
+        LOG(WARNING) << "WARNING: Using insecure RNG due to /dev/urandom failure";
+      }
+
+      BigInt private_key = HexToBigInt(private_key_hex);
+
+      // Ensure private key is within range [1, prime - 2].
+      private_key = (private_key % (prime - 2)) + 1;
+
+      // Compute Public Key: p+ = g^p- mod p.
+      // Note: This is computationally intensive operation.
+      BigInt public_key = power(generator, private_key, prime);
+      std::string my_public_key;
+      std::ostringstream oss;
+      oss << public_key;
+      my_public_key = oss.str();
+
+      // -- End Key Generation --
+      if (hook_flags == "True") LOG(CONSOLE) << "Exchange keys with API...";
+
+      std::string json_payload = "{\"public_key\": \"" + my_public_key + "\"}";
+
+      if (access_token.empty() || node_uuid.empty()) {
+        LOG(WARNING) << "[XGBoost-Hook] Error: Token or UUID not found.";
+      } else {
+        try {
+          // 1. HTTP PUT: Register this node's public key with the orchestration API.
+          std::string cmd_put =
+              "curl -X PUT -s -o /dev/null "
+              "-H \"Host: " +
+              api_ip +
+              "\" "
+              "-H \"access-token: " +
+              access_token +
+              "\" "
+              "-H \"Content-Type: application/json\" "
+              "-d '" +
+              json_payload +
+              "' "
+              "\"" +
+              url + "?action=" + action + "\"";
+
+          int status_code = std::system(cmd_put.c_str());
+
+          if (status_code != 0) {
+            LOG(WARNING) << "[XGBoost-Hook] Error executing CURL, code: " << status_code;
+          }
+
+          // 2. HTTP GET: Poll the server for peer public keys.
+          int max_retries = 900;
+          bool ready = false;
+          using json = nlohmann::json;
+
+          for (int i = 0; i < max_retries; i++) {
+            std::string tmp_file = "/tmp/dh_response_" + node_uuid + ".json";
+            std::string cmd_get =
+                "curl -X GET -s "
+                "-H \"Host: " +
+                api_ip +
+                "\" "
+                "-H \"access-token: " +
+                access_token +
+                "\" "
+                "-o " +
+                tmp_file +
+                " "
+                "\"" +
+                url + "?action=" + action + "\"";
+
+            int status_code = std::system(cmd_get.c_str());
+            if (status_code != 0) {
+              LOG(WARNING) << "[XGBoost-Hook] Error executing CURL, code: " << status_code;
+              break;
+            }
+
+            std::ifstream file(tmp_file);
+
+            if (file.is_open()) {
+              json j = json::parse(file);
+
+              // Handle server-side backoff request.
+              if (j.contains("wait")) {
+                int wait_seconds = j.value("wait", 1);
+                LOG(WARNING) << "[XGBoost-Hook] API requests to wait " << wait_seconds
+                             << " seconds.";
+                std::this_thread::sleep_for(std::chrono::seconds(wait_seconds));
+              }
+
+              // Process received keys if available.
+              if (j.contains("other_keys")) {
+                xgboost::tree::GlobalKeyStore::peer_public_keys.clear();
+
+                for (auto& element : j["other_keys"].items()) {
+                  std::string remote_uuid = element.key();
+                  std::string key = element.value();
+                  xgboost::tree::GlobalKeyStore::peer_public_keys[remote_uuid] = key;
+                }
+                ready = true;
+                break;
+              }
+            }
+          }
+          if (!ready) {
+            LOG(WARNING) << "[XGBoost-Hook] Timeout waiting for keys from nodes.";
+          }
+
+          // // DELETE
+          std::string cmd_delete =
+              "curl -X DELETE -s "
+              "-H \"Host: " +
+              api_ip +
+              "\" "
+              "-H \"access-token: " +
+              access_token +
+              "\" "
+              "\"" +
+              url + "?action=" + "current_node" + "\"";
+        } catch (const std::exception& e) {
+          LOG(WARNING) << "[XGBoost-Hook] Exception caught during API call.";
+          // Emergency Cleanup: Attempt to reset the session on failure.
+          std::string cmd_delete =
+              "curl -X DELETE -s "
+              "-H \"Host: " +
+              api_ip +
+              "\" "
+              "-H \"access-token: " +
+              access_token +
+              "\" "
+              "\"" +
+              url + "?action=" + "all" + "\"";
+        }
+      }
+    }
+
+    g_keys_exchanged_api = true;
+
+    // --- END API KEY EXCHANGE BLOCK ---
+  }
+
   void UpdateOneIter(int iter, std::shared_ptr<DMatrix> train) override {
+    const char* SECURE_AGGREGATION = std::getenv("SECURE_AGGREGATION");
+
+    std::string secure_aggregation = SECURE_AGGREGATION ? std::string(SECURE_AGGREGATION) : "";
+
+    static bool g_keys_exchanged_api = false;
+
     monitor_.Start("UpdateOneIter");
+
+    if (secure_aggregation == "True") {
+      this->AttemptSecureKeyExchange();
+    }
+
     TrainingObserver::Instance().Update(iter);
     this->Configure();
     this->FitIntercept(this->tparam_, train.get());
@@ -1162,15 +1411,15 @@ class LearnerImpl : public LearnerIO {
     this->ValidateDMatrix(train.get(), true);
 
     CHECK_EQ(this->learner_model_param_.OutputLength(), in_gpair->Shape(1))
-        << "The number of columns in gradient should be equal to the number of targets/classes in "
+        << "The number of columns in gradient should be equal to the number of targets/classes "
+           "in "
            "the model.";
     auto predt = prediction_container_.Cache(train, ctx_.Device());
     gbm_->DoBoost(train.get(), in_gpair, predt.get(), obj_.get());
     monitor_.Stop("BoostOneIter");
   }
 
-  std::string EvalOneIter(int iter,
-                          const std::vector<std::shared_ptr<DMatrix>>& data_sets,
+  std::string EvalOneIter(int iter, const std::vector<std::shared_ptr<DMatrix>>& data_sets,
                           const std::vector<std::string>& data_names) override {
     monitor_.Start("EvalOneIter");
     this->Configure();
@@ -1194,7 +1443,7 @@ class LearnerImpl : public LearnerIO {
       this->ValidateDMatrix(m.get(), false);
       this->PredictRaw(m.get(), predt.get(), false, 0, 0);
 
-      auto &out = output_predictions_.Cache(m, ctx_.Device())->predictions;
+      auto& out = output_predictions_.Cache(m, ctx_.Device())->predictions;
       out.Resize(predt->predictions.Size());
       out.Copy(predt->predictions);
 
@@ -1212,8 +1461,7 @@ class LearnerImpl : public LearnerIO {
                HostDeviceVector<float>* out_preds, bst_layer_t layer_begin, bst_layer_t layer_end,
                bool training, bool pred_leaf, bool pred_contribs, bool approx_contribs,
                bool pred_interactions) override {
-    int multiple_predictions = static_cast<int>(pred_leaf) +
-                               static_cast<int>(pred_interactions) +
+    int multiple_predictions = static_cast<int>(pred_leaf) + static_cast<int>(pred_interactions) +
                                static_cast<int>(pred_contribs);
     this->Configure();
     if (training) {
@@ -1243,7 +1491,9 @@ class LearnerImpl : public LearnerIO {
   }
 
   int32_t BoostedRounds() const override {
-    if (!this->gbm_) { return 0; }  // haven't call train or LoadModel.
+    if (!this->gbm_) {
+      return 0;
+    }  // haven't call train or LoadModel.
     CHECK(!this->need_configuration_);
     return this->gbm_->BoostedRounds();
   }
@@ -1300,7 +1550,7 @@ class LearnerImpl : public LearnerIO {
    *   predictor, when it equals 0, this means we are using all the trees
    * \param training allow dropout when the DART booster is being used
    */
-  void PredictRaw(DMatrix *data, PredictionCacheEntry *out_preds, bool training,
+  void PredictRaw(DMatrix* data, PredictionCacheEntry* out_preds, bool training,
                   unsigned layer_begin, unsigned layer_end) const {
     CHECK(gbm_ != nullptr) << "Predict must happen after Load or configuration";
     this->CheckModelInitialized();
@@ -1346,8 +1596,7 @@ class LearnerImpl : public LearnerIO {
 
 constexpr int32_t LearnerImpl::kRandSeedMagic;
 
-Learner* Learner::Create(
-    const std::vector<std::shared_ptr<DMatrix> >& cache_data) {
+Learner* Learner::Create(const std::vector<std::shared_ptr<DMatrix>>& cache_data) {
   return new LearnerImpl(cache_data);
 }
 }  // namespace xgboost

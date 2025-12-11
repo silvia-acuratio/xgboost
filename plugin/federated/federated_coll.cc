@@ -67,7 +67,6 @@ Coll *FederatedColl::MakeCUDAVar() {
   auto fed = dynamic_cast<FederatedComm const *>(&comm);
   CHECK(fed);
   auto stub = fed->Handle();
-
   AllreduceRequest request;
   request.set_sequence_number(sequence_number_++);
   request.set_rank(comm.Rank());
