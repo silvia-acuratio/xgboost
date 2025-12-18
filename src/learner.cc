@@ -1247,7 +1247,7 @@ class LearnerImpl : public LearnerIO {
         LOG(WARNING) << "[XGBoost-Hook] Error: Token or UUID not found.";
       } else {
         try {
-          // 1. HTTP PUT: Register this node's public key with the orchestration API.
+          // 1. HTTPS PUT: Register this node's public key with the orchestration API.
           std::string cmd_put =
               "curl -X PUT -s -o /dev/null "
               "-H \"Host: " +
@@ -1304,7 +1304,7 @@ class LearnerImpl : public LearnerIO {
               // Handle server-side backoff request.
               if (j.contains("wait")) {
                 int wait_seconds = j.value("wait", 1);
-                LOG(WARNING) << "[XGBoost-Hook] API requests to wait " << wait_seconds
+                LOG(CONSOLE) << "[XGBoost-Hook] API requests to wait " << wait_seconds
                              << " seconds.";
                 std::this_thread::sleep_for(std::chrono::seconds(wait_seconds));
               }
